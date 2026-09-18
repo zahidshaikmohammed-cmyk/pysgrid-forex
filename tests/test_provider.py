@@ -1,7 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
 from pysgrid_forex.config import Settings
-from pysgrid_forex.provider import RealMarketAPI
+from pysgrid_forex.models import Candle
+from pysgrid_forex.provider import RealMarketAPI, _M1Accumulator
 
 
 def test_ws_url_uses_documented_price_stream():
@@ -70,3 +71,47 @@ def test_rest_five_minute_series_is_rejected():
         completed_only=True,
         validate_series=True,
     ) == []
+
+
+def _candle(ts: datetime, close: float, high: float | None = None, low: float | None = None, volume: float = 1) -> Candle:
+    return Candle(
+        timestamp=ts.isoformat().replace("+00:00", "Z"),
+        open=close - 0.2,
+        high=high if high is not None else close,
+        low=low if low is not None else close - 0.5,
+        close=close,
+        volume=volume,
+        bid=close - 0.1,
+        ask=close + 0.1,
+    )
+
+
+def test_ws_updates_are_aggregated_into_completed_m1():
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    acc = _M1Accumulator()
+
+    assert acc.update(_candle(start, 100.0, high=100.2, low=99.8, volume=2)) is None
+    assert acc.update(_candle(start + timedelta(seconds=20), 100.5, high=100.7, low=99.7, volume=7)) is None
+
+    completed = acc.update(_candle(start + timedelta(minutes=1), 101.0, high=101.2, low=100.4, volume=3))
+
+    assert completed is not None
+    assert completed.timestamp == "2026-01-01T00:00:00Z"
+    assert completed.open == 99.8
+    assert completed.high == 100.7
+    assert completed.low == 99.7
+    assert completed.close == 100.5
+    assert completed.volume == 7
+
+
+def test_ws_five_minute_jump_is_not_fabricated_into_missing_m1_bars():
+    start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+    acc = _M1Accumulator()
+    acc.update(_candle(start, 100.0))
+
+    completed = acc.update(_candle(start + timedelta(minutes=5), 105.0))
+
+    assert completed is not None
+    assert completed.timestamp == "2026-01-01T00:00:00Z"
+    assert acc.current is not None
+    assert acc.current.timestamp == "2026-01-01T00:05:00Z"
