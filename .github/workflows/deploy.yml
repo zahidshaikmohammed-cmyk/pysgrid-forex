@@ -66,14 +66,32 @@ jobs:
               for attempt in $(seq 1 30); do
                 if curl --fail --silent --show-error http://127.0.0.1:8080/health; then
                   echo
-                  echo "Health check passed on attempt $attempt."
+                  echo "Health endpoint passed on attempt $attempt."
+                  break
+                fi
+                if [ "$attempt" -eq 30 ]; then
+                  echo "Health endpoint failed after 60 seconds."
+                  sudo systemctl --no-pager --full status pysgrid-forex || true
+                  sudo journalctl -u pysgrid-forex -n 120 --no-pager || true
+                  exit 1
+                fi
+                sleep 2
+              done
+
+              echo "Waiting for at least one live M1 WebSocket symbol..."
+              for attempt in $(seq 1 30); do
+                health=$(curl --fail --silent --show-error http://127.0.0.1:8080/health)
+                echo "$health"
+                live=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("live_symbols", 0))' "$health")
+                if [ "$live" -ge 1 ]; then
+                  echo "Live M1 feed is active on attempt $attempt."
                   exit 0
                 fi
                 sleep 2
               done
 
-              echo "Health check failed after 60 seconds."
+              echo "No live WebSocket symbols after 60 seconds."
               sudo systemctl --no-pager --full status pysgrid-forex || true
-              sudo journalctl -u pysgrid-forex -n 120 --no-pager || true
+              sudo journalctl -u pysgrid-forex -n 160 --no-pager || true
               exit 1
             '
