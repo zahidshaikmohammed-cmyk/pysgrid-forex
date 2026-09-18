@@ -9,7 +9,7 @@ from threading import RLock
 
 from .models import Candle, SymbolState
 
-DATA_SCHEMA_VERSION = 2
+DATA_SCHEMA_VERSION = 3
 
 
 class CandleStore:
@@ -48,10 +48,18 @@ class CandleStore:
                     state.websocket_connected = bool(raw.get("websocket_connected", False))
                     state.reconnect_count = int(raw.get("reconnect_count", 0))
                     state.gap_recoveries = int(raw.get("gap_recoveries", 0))
-                    state.candles = [
+                    candles = [
                         Candle(**x)
                         for x in raw.get("candles_1m", [])
-                    ][-self.max_candles:]
+                    ]
+                    for previous, current in zip(candles, candles[1:]):
+                        delta = (
+                            datetime.fromisoformat(current.timestamp.replace("Z", "+00:00"))
+                            - datetime.fromisoformat(previous.timestamp.replace("Z", "+00:00"))
+                        ).total_seconds()
+                        if delta != 60:
+                            raise ValueError("stored candle series is not M1")
+                    state.candles = candles[-self.max_candles:]
                 except (OSError, ValueError, TypeError, KeyError):
                     state = SymbolState(symbol=symbol, candles=[])
 
