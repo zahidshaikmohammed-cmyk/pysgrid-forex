@@ -5,6 +5,7 @@ import json
 import logging
 import random
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -19,6 +20,64 @@ CandleHandler = Callable[[str, Candle], Awaitable[None]]
 StatusHandler = Callable[[str, bool], Awaitable[None]]
 
 M1_SECONDS = 60
+
+
+@dataclass
+class _M1Accumulator:
+    """Turn repeated provider updates for one candle into completed M1 bars."""
+
+    current: Candle | None = None
+
+    def update(self, incoming: Candle) -> Candle | None:
+        ts = parse_timestamp(incoming.timestamp).replace(second=0, microsecond=0)
+        normalized = Candle(
+            timestamp=ts.isoformat().replace("+00:00", "Z"),
+            open=incoming.open,
+            high=incoming.high,
+            low=incoming.low,
+            close=incoming.close,
+            volume=incoming.volume,
+            bid=incoming.bid,
+            ask=incoming.ask,
+        )
+
+        if self.current is None:
+            self.current = normalized
+            return None
+
+        current_ts = parse_timestamp(self.current.timestamp)
+        if ts < current_ts:
+            return None
+
+        if ts == current_ts:
+            # RealMarketAPI /price emits repeated updates for the forming
+            # timeframe candle. OHLC and volume are cumulative within that
+            # candle, so retain the first open and latest close/quote while
+            # taking the widest observed range and latest volume.
+            self.current = Candle(
+                timestamp=self.current.timestamp,
+                open=self.current.open,
+                high=max(self.current.high, normalized.high),
+                low=min(self.current.low, normalized.low),
+                close=normalized.close,
+                volume=max(self.current.volume, normalized.volume),
+                bid=normalized.bid,
+                ask=normalized.ask,
+            )
+            return None
+
+        completed = self.current
+        gap = (ts - current_ts).total_seconds()
+        if gap != M1_SECONDS:
+            log.warning(
+                "M1 provider timestamp gap: %.0f seconds (%s -> %s)",
+                gap,
+                completed.timestamp,
+                normalized.timestamp,
+            )
+
+        self.current = normalized
+        return completed
 
 
 class RealMarketAPI:
@@ -47,13 +106,7 @@ class RealMarketAPI:
         return f"{self.s.ws_base}?{query}"
 
     async def fetch_recent(self, symbol: str) -> list[Candle]:
-        """Fetch REST candles only when they form a genuine M1 series.
-
-        RealMarketAPI's /candle response observed in production was 5-minute
-        spaced even when M1 was requested. Never allow that response to enter
-        the M1 store. A multi-bar response is accepted only when every
-        consecutive timestamp is exactly 60 seconds apart.
-        """
+        """Fetch REST candles only when they form a genuine M1 series."""
         if not self.s.api_key:
             return []
 
@@ -139,7 +192,6 @@ class RealMarketAPI:
         return []
 
     async def recover(self, symbol: str) -> list[Candle]:
-        """Best-effort REST recovery without ever accepting non-M1 bars."""
         try:
             candles = await self.fetch_recent(symbol)
             for candle in candles:
@@ -149,17 +201,43 @@ class RealMarketAPI:
             log.exception("REST recovery failed for %s", symbol)
             return []
 
+    @classmethod
+    def _iter_provider_updates(cls, body: object) -> list[Candle]:
+        """Extract every raw price/candle update without timestamp deduplication."""
+        items: list[object]
+        if isinstance(body, dict):
+            for key in ("message", "payload", "result", "data", "Data", "candle", "Candle"):
+                nested = body.get(key)
+                if isinstance(nested, (dict, list)):
+                    return cls._iter_provider_updates(nested)
+            items = [body]
+        elif isinstance(body, list):
+            items = body
+        else:
+            return []
+
+        result: list[Candle] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                result.append(Candle.from_provider(item))
+            except (KeyError, ValueError, TypeError):
+                continue
+        return result
+
     async def stream_symbol(self, symbol: str, stop: asyncio.Event) -> None:
         delay = 1.0
 
         while not stop.is_set():
+            accumulator = _M1Accumulator()
             try:
                 if not self.s.api_key:
                     await self._status(symbol, False)
                     await asyncio.sleep(5)
                     continue
 
-                log.info("connecting M1 candle WebSocket: %s", symbol)
+                log.info("connecting M1 price WebSocket: %s", symbol)
 
                 async with websockets.connect(
                     self._ws_url(symbol),
@@ -187,45 +265,16 @@ class RealMarketAPI:
                             log.warning("Invalid WebSocket JSON for %s", symbol)
                             continue
 
-                        candles = self._extract_candles(
-                            body,
-                            completed_only=True,
-                            validate_series=False,
-                        )
-
-                        if not candles and isinstance(body, dict):
-                            for key in (
-                                "message",
-                                "payload",
-                                "result",
-                                "data",
-                                "Data",
-                                "candle",
-                                "Candle",
-                            ):
-                                nested = body.get(key)
-                                if isinstance(nested, (dict, list)):
-                                    candles = self._extract_candles(
-                                        nested,
-                                        completed_only=True,
-                                        validate_series=False,
-                                    )
-                                    if candles:
-                                        break
-
-                        for candle in candles:
-                            await self.on_candle(symbol, candle)
+                        for update in self._iter_provider_updates(body):
+                            completed = accumulator.update(update)
+                            if completed is not None:
+                                await self.on_candle(symbol, completed)
 
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 await self._status(symbol, False)
                 log.warning("M1 WebSocket %s disconnected: %s", symbol, exc)
-
-                # Do not call /candle here. The observed endpoint returns
-                # 5-minute-spaced bars for an M1 request, so using it for
-                # recovery would reintroduce the exact data-integrity bug this
-                # service is designed to prevent.
                 await asyncio.sleep(
                     delay + random.uniform(0, min(1.0, delay))
                 )
