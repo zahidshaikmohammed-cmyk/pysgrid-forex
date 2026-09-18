@@ -29,7 +29,7 @@ class Settings:
     log_level: str = "INFO"
     rest_base: str = "https://api.realmarketapi.com/api/v1"
     # RealMarketAPI's documented live candle stream is /price.
-    ws_base: str = "wss://api.realmarketapi.com/price"
+    ws_base: str = "wss://api.realmarketapi.com/candles"
 
     @classmethod
     def from_env(cls) -> "Settings":
