@@ -1,0 +1,23 @@
+[Unit]
+Description=Pysgrid Forex market data service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/pysgrid-forex
+EnvironmentFile=/etc/pysgrid-forex/pysgrid-forex.env
+ExecStart=/opt/pysgrid-forex/.venv/bin/uvicorn pysgrid_forex.api:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/pysgrid-forex/data
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
