@@ -26,3 +26,17 @@ def test_old_schema_is_reset(tmp_path: Path):
     store = CandleStore(str(tmp_path))
     state = store.load("XAUUSD")
     assert state.candles == []
+
+
+def test_non_m1_schema3_series_is_reset(tmp_path: Path):
+    path = tmp_path / "XAUUSD.json"
+    path.write_text(
+        '{"data_schema_version":3,"status":"ok","candles_1m":['
+        '{"timestamp":"2026-01-01T00:00:00Z","open":1,"high":2,"low":1,"close":1.5,"volume":1},'
+        '{"timestamp":"2026-01-01T00:05:00Z","open":1.5,"high":2.5,"low":1,"close":2,"volume":2}'
+        ']}',
+        encoding="utf-8",
+    )
+    store = CandleStore(str(tmp_path))
+    state = store.load("XAUUSD")
+    assert state.candles == []
