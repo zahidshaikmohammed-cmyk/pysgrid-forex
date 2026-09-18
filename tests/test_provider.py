@@ -4,14 +4,14 @@ from pysgrid_forex.config import Settings
 from pysgrid_forex.provider import RealMarketAPI
 
 
-def test_ws_url_uses_dedicated_candle_stream():
+def test_ws_url_uses_documented_price_stream():
     s = Settings(api_key="secret", symbols=("XAUUSD",))
     p = RealMarketAPI(s, lambda *_: None)
     url = p._ws_url("XAUUSD")
-    assert url.startswith("wss://api.realmarketapi.com/ws/candles?")
-    assert "SymbolCode=XAUUSD" in url
-    assert "TimeFrame=M1" in url
-    assert "ApiKey=secret" in url
+    assert url.startswith("wss://api.realmarketapi.com/price?")
+    assert "symbolCode=XAUUSD" in url
+    assert "timeFrame=M1" in url
+    assert "apiKey=secret" in url
 
 
 def test_extract_single():
