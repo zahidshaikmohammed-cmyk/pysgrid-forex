@@ -4,13 +4,14 @@ from pysgrid_forex.config import Settings
 from pysgrid_forex.provider import RealMarketAPI
 
 
-def test_ws_url():
+def test_ws_url_uses_dedicated_candle_stream():
     s = Settings(api_key="secret", symbols=("XAUUSD",))
     p = RealMarketAPI(s, lambda *_: None)
     url = p._ws_url("XAUUSD")
-    assert "symbolCode=XAUUSD" in url
-    assert "timeFrame=M1" in url
-    assert "apiKey=secret" in url
+    assert url.startswith("wss://api.realmarketapi.com/ws/candles?")
+    assert "SymbolCode=XAUUSD" in url
+    assert "TimeFrame=M1" in url
+    assert "ApiKey=secret" in url
 
 
 def test_extract_single():
@@ -45,3 +46,27 @@ def test_forming_current_m1_is_rejected():
         "OpenTime": current_open.isoformat().replace("+00:00", "Z"),
     }
     assert RealMarketAPI._extract_candles(body) == []
+
+
+def test_rest_five_minute_series_is_rejected():
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=10)
+    items = []
+    for i in range(3):
+        ts = now + timedelta(minutes=i * 5)
+        items.append(
+            {
+                "SymbolCode": "XAUUSD",
+                "OpenPrice": 1.0,
+                "ClosePrice": 1.1,
+                "HighPrice": 1.2,
+                "LowPrice": 0.9,
+                "Volume": 5,
+                "OpenTime": ts.isoformat().replace("+00:00", "Z"),
+            }
+        )
+
+    assert RealMarketAPI._extract_candles(
+        {"data": items},
+        completed_only=True,
+        validate_series=True,
+    ) == []
