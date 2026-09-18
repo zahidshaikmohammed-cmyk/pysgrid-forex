@@ -62,6 +62,12 @@ jobs:
               cd /opt/pysgrid-forex
               bash deploy/install.sh
 
+              echo "Running raw RealMarketAPI M1 provider probe..."
+              set -a
+              . /etc/pysgrid-forex/pysgrid-forex.env
+              set +a
+              python3 tools/raw_ws_probe.py
+
               echo "Waiting for FastAPI health endpoint..."
               for attempt in $(seq 1 30); do
                 if curl --fail --silent --show-error http://127.0.0.1:8080/health; then
