@@ -28,7 +28,7 @@ class Settings:
     rest_timeout_seconds: float = 15.0
     log_level: str = "INFO"
     rest_base: str = "https://api.realmarketapi.com/api/v1"
-    ws_base: str = "wss://api.realmarketapi.com/ws/candles"
+    ws_base: str = "wss://api.realmarketapi.com/price"
 
     @classmethod
     def from_env(cls) -> "Settings":
