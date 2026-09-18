@@ -4,7 +4,7 @@ Production-ready 1-minute OHLCV ingestion for Pysgrid using RealMarketAPI.
 
 ## Architecture
 
-RealMarketAPI completed-candle WebSocket -> strict M1 validation -> durable local state -> FastAPI JSON endpoints -> Oracle VM/systemd -> GitHub Actions deployment.
+RealMarketAPI /price WebSocket -> strict M1 validation -> durable local state -> FastAPI JSON endpoints -> Oracle VM/systemd -> GitHub Actions deployment.
 
 The provider API key is never committed. Set `REALMARKET_API_KEY` in the runtime environment.
 
@@ -17,13 +17,14 @@ The list is configurable through `PYSGRID_SYMBOLS`.
 ## Data-integrity rules
 
 - `candles_1m` contains completed candles only.
-- The dedicated RealMarketAPI candle WebSocket is the live OHLCV source.
+- The documented RealMarketAPI `/price` WebSocket is the live OHLCV source.
 - REST `/candle` data is accepted only when a returned multi-bar series has exact 60-second spacing.
-- Non-M1 REST data is rejected instead of being relabeled as M1.
+- Observed non-M1 REST data is rejected instead of being relabeled as M1.
 - Existing pre-fix state is invalidated once by the internal data schema migration.
 - Missing live candles are reported as gaps; the system never fabricates M1 bars from 5-minute data.
+- REST recovery is disabled because the observed `/candle?timeFrame=M1` response was 5-minute spaced.
 
-RealMarketAPI documents WebSocket streaming for Plus plans and recommends persistent WebSocket delivery for live candles. The provider's current documentation also exposes M1 as a supported timeframe. The implementation deliberately keeps REST recovery fail-safe because observed `/candle?timeFrame=M1` responses were 5-minute spaced.
+RealMarketAPI documents persistent WebSocket candle delivery on Plus plans and lists M1 as a supported timeframe.
 
 ## Local test
 
