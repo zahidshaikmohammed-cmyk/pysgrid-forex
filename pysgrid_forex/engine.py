@@ -52,6 +52,25 @@ class Engine:
 
         self.store.upsert(symbol, candle)
 
+    @staticmethod
+    def is_valid_m1(state: SymbolState, *, max_age_seconds: int = 120) -> bool:
+        candles = state.candles or []
+        if len(candles) < 2 or not state.last_candle_timestamp:
+            return False
+        try:
+            last = parse_timestamp(state.last_candle_timestamp)
+            age = (datetime.now(timezone.utc) - last).total_seconds()
+            if age > max_age_seconds:
+                return False
+            previous = candles[-2]
+            current = candles[-1]
+            return (
+                (parse_timestamp(current.timestamp) - parse_timestamp(previous.timestamp)).total_seconds()
+                == 60
+            )
+        except (ValueError, TypeError):
+            return False
+
     def states(self) -> dict[str, SymbolState]:
         states = self.store.all_states(self.settings.symbols)
         now = datetime.now(timezone.utc)
