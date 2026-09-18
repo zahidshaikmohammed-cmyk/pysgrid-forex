@@ -78,19 +78,19 @@ jobs:
                 sleep 2
               done
 
-              echo "Waiting for at least one live M1 WebSocket symbol..."
-              for attempt in $(seq 1 30); do
+              echo "Waiting for at least one validated M1 symbol..."
+              for attempt in $(seq 1 90); do
                 health=$(curl --fail --silent --show-error http://127.0.0.1:8080/health)
                 echo "$health"
-                live=$(printf '%s' "$health" | grep -o "\"live_symbols\":[0-9]*" | cut -d: -f2)
-                if [ "$live" -ge 1 ]; then
-                  echo "Live M1 feed is active on attempt $attempt."
+                m1=$(printf '%s' "$health" | grep -o "\"m1_live_symbols\":[0-9]*" | cut -d: -f2)
+                if [ "$m1" -ge 1 ]; then
+                  echo "Validated live M1 feed is active on attempt $attempt."
                   exit 0
                 fi
                 sleep 2
               done
 
-              echo "No live WebSocket symbols after 60 seconds."
+              echo "No validated M1 symbols after 180 seconds."
               sudo systemctl --no-pager --full status pysgrid-forex || true
               sudo journalctl -u pysgrid-forex -n 160 --no-pager || true
               exit 1
