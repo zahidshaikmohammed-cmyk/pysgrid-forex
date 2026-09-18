@@ -39,9 +39,9 @@ class RealMarketAPI:
     def _ws_url(self, symbol: str) -> str:
         query = urlencode(
             {
-                "ApiKey": self.s.api_key,
-                "SymbolCode": symbol,
-                "TimeFrame": self.s.timeframe,
+                "apiKey": self.s.api_key,
+                "symbolCode": symbol,
+                "timeFrame": self.s.timeframe,
             }
         )
         return f"{self.s.ws_base}?{query}"
@@ -222,10 +222,10 @@ class RealMarketAPI:
                 await self._status(symbol, False)
                 log.warning("M1 WebSocket %s disconnected: %s", symbol, exc)
 
-                # REST recovery is deliberately guarded by strict M1 spacing.
-                # If the provider returns 5-minute bars here, they are rejected.
-                await self.recover(symbol)
-
+                # Do not call /candle here. The observed endpoint returns
+                # 5-minute-spaced bars for an M1 request, so using it for
+                # recovery would reintroduce the exact data-integrity bug this
+                # service is designed to prevent.
                 await asyncio.sleep(
                     delay + random.uniform(0, min(1.0, delay))
                 )
