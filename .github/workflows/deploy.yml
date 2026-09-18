@@ -9,6 +9,11 @@ concurrency:
   group: pysgrid-forex-production
   cancel-in-progress: true
 
+env:
+  ORACLE_HOST: 140.245.226.102
+  ORACLE_USER: ubuntu
+  ORACLE_PORT: "22"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -28,40 +33,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Install SSH key
         env:
           ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
         run: |
+          test -n "$ORACLE_SSH_KEY"
           install -m 700 -d ~/.ssh
           printf '%s\n' "$ORACLE_SSH_KEY" > ~/.ssh/oracle_key
           chmod 600 ~/.ssh/oracle_key
-          ssh-keyscan -H "${{ vars.ORACLE_HOST }}" >> ~/.ssh/known_hosts
+          ssh-keyscan -H "$ORACLE_HOST" >> ~/.ssh/known_hosts
 
       - name: Deploy
-        env:
-          HOST: ${{ vars.ORACLE_HOST }}
-          USER: ${{ vars.ORACLE_USER }}
-          PORT: ${{ vars.ORACLE_PORT }}
         run: |
-          ssh -i ~/.ssh/oracle_key -p "$PORT" "$USER@$HOST" '
-            set -e
-            if [ ! -d /opt/pysgrid-forex/.git ]; then
-              sudo mkdir -p /opt/pysgrid-forex
-              sudo chown -R ubuntu:ubuntu /opt/pysgrid-forex
-              git clone https://github.com/zahidshaikmohammed-cmyk/pysgrid-forex.git /opt/pysgrid-forex
-            else
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes             -i ~/.ssh/oracle_key -p "$ORACLE_PORT" "$ORACLE_USER@$ORACLE_HOST" '
+              set -e
+              if [ ! -d /opt/pysgrid-forex/.git ]; then
+                sudo mkdir -p /opt/pysgrid-forex
+                sudo chown -R ubuntu:ubuntu /opt/pysgrid-forex
+                git clone https://github.com/zahidshaikmohammed-cmyk/pysgrid-forex.git /opt/pysgrid-forex
+              else
+                cd /opt/pysgrid-forex
+                git fetch origin main
+                git reset --hard origin/main
+              fi
               cd /opt/pysgrid-forex
-              git fetch origin main
-              git reset --hard origin/main
-            fi
-            cd /opt/pysgrid-forex
-            bash deploy/install.sh
-          '
-
-      - name: Health check
-        env:
-          HOST: ${{ vars.ORACLE_HOST }}
-          PORT: ${{ vars.ORACLE_PORT }}
-        run: |
-          sleep 5
-          curl --fail --silent --show-error "http://${{ vars.ORACLE_HOST }}:8080/health"
+              bash deploy/install.sh
+              curl --fail --silent --show-error http://127.0.0.1:8080/health
+            '
