@@ -9,7 +9,7 @@ def test_ws_url_uses_documented_price_stream():
     s = Settings(api_key="secret", symbols=("XAUUSD",))
     p = RealMarketAPI(s, lambda *_: None)
     url = p._ws_url("XAUUSD")
-    assert url.startswith("wss://api.realmarketapi.com/price?")
+    assert url.startswith("wss://api.realmarketapi.com/candles?")
     assert "symbolCode=XAUUSD" in url
     assert "timeFrame=M1" in url
     assert "apiKey=secret" in url
