@@ -9,6 +9,8 @@ from threading import RLock
 
 from .models import Candle, SymbolState
 
+DATA_SCHEMA_VERSION = 2
+
 
 class CandleStore:
     def __init__(self, data_dir: str, max_candles: int = 500):
@@ -25,19 +27,34 @@ class CandleStore:
         with self._lock:
             if symbol in self._states:
                 return self._states[symbol]
+
             path = self._path(symbol)
             state = SymbolState(symbol=symbol, candles=[])
+
             if path.exists():
                 try:
                     raw = json.loads(path.read_text(encoding="utf-8"))
+
+                    # v1 data may contain the previously observed 5-minute
+                    # /candle feed masquerading as M1. Reset it exactly once.
+                    if raw.get("data_schema_version") != DATA_SCHEMA_VERSION:
+                        self._states[symbol] = state
+                        return state
+
                     state.market_state = raw.get("market_state", "unknown")
                     state.status = raw.get("status", "no_data")
                     state.last_candle_timestamp = raw.get("last_candle_timestamp")
                     state.updated_at = raw.get("updated_at")
+                    state.websocket_connected = bool(raw.get("websocket_connected", False))
+                    state.reconnect_count = int(raw.get("reconnect_count", 0))
                     state.gap_recoveries = int(raw.get("gap_recoveries", 0))
-                    state.candles = [Candle(**x) for x in raw.get("candles_1m", [])][-self.max_candles:]
-                except (OSError, ValueError, TypeError):
+                    state.candles = [
+                        Candle(**x)
+                        for x in raw.get("candles_1m", [])
+                    ][-self.max_candles:]
+                except (OSError, ValueError, TypeError, KeyError):
                     state = SymbolState(symbol=symbol, candles=[])
+
             self._states[symbol] = state
             return state
 
@@ -50,9 +67,18 @@ class CandleStore:
             existing = {c.timestamp: c for c in (state.candles or [])}
             changed = existing.get(candle.timestamp) != candle
             existing[candle.timestamp] = candle
-            state.candles = sorted(existing.values(), key=lambda c: c.timestamp)[-self.max_candles:]
-            state.last_candle_timestamp = state.candles[-1].timestamp if state.candles else None
-            state.updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            state.candles = sorted(
+                existing.values(),
+                key=lambda c: c.timestamp,
+            )[-self.max_candles:]
+            state.last_candle_timestamp = (
+                state.candles[-1].timestamp if state.candles else None
+            )
+            state.updated_at = (
+                datetime.now(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
             state.status = "ok"
             state.market_state = "open"
             self._persist(state)
@@ -74,9 +100,19 @@ class CandleStore:
         self._persist(state)
 
     def _persist(self, state: SymbolState) -> None:
-        payload = json.dumps(state.to_dict(), separators=(",", ":"), ensure_ascii=False)
+        payload = json.dumps(
+            {
+                "data_schema_version": DATA_SCHEMA_VERSION,
+                **state.to_dict(),
+            },
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
         path = self._path(state.symbol)
-        fd, temp = tempfile.mkstemp(prefix=f".{state.symbol}.", dir=self.root)
+        fd, temp = tempfile.mkstemp(
+            prefix=f".{state.symbol}.",
+            dir=self.root,
+        )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(payload)

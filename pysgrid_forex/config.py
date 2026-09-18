@@ -28,7 +28,9 @@ class Settings:
     rest_timeout_seconds: float = 15.0
     log_level: str = "INFO"
     rest_base: str = "https://api.realmarketapi.com/api/v1"
-    ws_base: str = "wss://api.realmarketapi.com/price"
+    # RealMarketAPI exposes a dedicated candle WebSocket. Use it for the
+    # completed OHLCV feed rather than the price/ticker stream.
+    ws_base: str = "wss://api.realmarketapi.com/ws/candles"
 
     @classmethod
     def from_env(cls) -> "Settings":

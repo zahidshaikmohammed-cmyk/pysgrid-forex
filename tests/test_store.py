@@ -15,3 +15,14 @@ def test_store_deduplicates(tmp_path: Path):
     store.upsert("XAUUSD", c3)
     state = store.load("XAUUSD")
     assert [c.timestamp for c in state.candles] == [c2.timestamp, c3.timestamp]
+
+
+def test_old_schema_is_reset(tmp_path: Path):
+    path = tmp_path / "XAUUSD.json"
+    path.write_text(
+        '{"status":"ok","candles_1m":[{"timestamp":"2026-01-01T00:00:00Z","open":1,"high":2,"low":1,"close":1.5,"volume":1}]}',
+        encoding="utf-8",
+    )
+    store = CandleStore(str(tmp_path))
+    state = store.load("XAUUSD")
+    assert state.candles == []
