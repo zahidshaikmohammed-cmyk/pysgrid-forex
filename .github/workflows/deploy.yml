@@ -61,5 +61,19 @@ jobs:
               fi
               cd /opt/pysgrid-forex
               bash deploy/install.sh
-              curl --fail --silent --show-error http://127.0.0.1:8080/health
+
+              echo "Waiting for FastAPI health endpoint..."
+              for attempt in $(seq 1 30); do
+                if curl --fail --silent --show-error http://127.0.0.1:8080/health; then
+                  echo
+                  echo "Health check passed on attempt $attempt."
+                  exit 0
+                fi
+                sleep 2
+              done
+
+              echo "Health check failed after 60 seconds."
+              sudo systemctl --no-pager --full status pysgrid-forex || true
+              sudo journalctl -u pysgrid-forex -n 120 --no-pager || true
+              exit 1
             '
