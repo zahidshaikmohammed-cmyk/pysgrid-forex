@@ -36,6 +36,7 @@ async def shutdown() -> None:
 async def health() -> dict:
     states = engine.states()
     live = sum(1 for s in states.values() if s.status == "ok")
+    m1_live = sum(1 for s in states.values() if engine.is_valid_m1(s))
     return {
         "service": "pysgrid-forex",
         "status": "ok" if live else "degraded",
@@ -44,6 +45,7 @@ async def health() -> dict:
         "timeframe": settings.timeframe,
         "symbol_count": len(settings.symbols),
         "live_symbols": live,
+        "m1_live_symbols": m1_live,
         "api_key_configured": bool(settings.api_key),
     }
 
@@ -82,6 +84,7 @@ def _symbol_payload(symbol: str) -> dict:
         "market_state": state.market_state,
         "generated_at": _stamp(),
         "last_candle_timestamp": state.last_candle_timestamp,
+        "m1_valid": engine.is_valid_m1(state),
         "websocket_connected": state.websocket_connected,
         "candles_1m": [c.as_dict() for c in (state.candles or [])],
     }
