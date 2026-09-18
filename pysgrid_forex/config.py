@@ -22,7 +22,7 @@ class Settings:
     data_dir: str = "./data"
     host: str = "0.0.0.0"
     port: int = 8080
-    max_candles: int = 500
+    max_candles: int = 1500
     stale_seconds: int = 120
     reconnect_max_seconds: int = 30
     rest_timeout_seconds: float = 15.0
@@ -39,7 +39,7 @@ class Settings:
             data_dir=os.getenv("PYSGRID_DATA_DIR", "./data"),
             host=os.getenv("PYSGRID_HOST", "0.0.0.0"),
             port=int(os.getenv("PYSGRID_PORT", "8080")),
-            max_candles=int(os.getenv("PYSGRID_MAX_CANDLES", "500")),
+            max_candles=int(os.getenv("PYSGRID_MAX_CANDLES", "1500")),
             stale_seconds=int(os.getenv("PYSGRID_STALE_SECONDS", "120")),
             reconnect_max_seconds=int(os.getenv("PYSGRID_RECONNECT_MAX_SECONDS", "30")),
             rest_timeout_seconds=float(os.getenv("PYSGRID_REST_TIMEOUT_SECONDS", "15")),
