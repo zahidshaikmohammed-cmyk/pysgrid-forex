@@ -82,7 +82,7 @@ jobs:
               for attempt in $(seq 1 30); do
                 health=$(curl --fail --silent --show-error http://127.0.0.1:8080/health)
                 echo "$health"
-                live=$(printf '%s' "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('live_symbols', 0))")
+                live=$(printf '%s' "$health" | grep -o "\"live_symbols\":[0-9]*" | cut -d: -f2)
                 if [ "$live" -ge 1 ]; then
                   echo "Live M1 feed is active on attempt $attempt."
                   exit 0
