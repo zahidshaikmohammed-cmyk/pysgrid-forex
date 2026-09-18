@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from .config import Settings
-from .models import Candle, SymbolState
+from .models import Candle, SymbolState, parse_timestamp
 from .provider import RealMarketAPI
 from .store import CandleStore
 
@@ -17,10 +17,32 @@ class Engine:
         self.settings = settings
         self.store = CandleStore(settings.data_dir, settings.max_candles)
         self.stop_event = asyncio.Event()
-        self.provider = RealMarketAPI(settings, self.on_candle)
+        self.recovering: set[str] = set()
+        self.provider = RealMarketAPI(settings, self.on_candle, self.on_status)
         self.started_at = datetime.now(timezone.utc)
 
+    async def on_status(self, symbol: str, connected: bool) -> None:
+        self.store.mark_socket(symbol, connected)
+        if not connected:
+            self.store.increment_reconnect(symbol)
+
     async def on_candle(self, symbol: str, candle: Candle) -> None:
+        state = self.store.load(symbol)
+        if state.last_candle_timestamp and symbol not in self.recovering:
+            previous = parse_timestamp(state.last_candle_timestamp)
+            current = parse_timestamp(candle.timestamp)
+            gap_seconds = (current - previous).total_seconds()
+            # A completed M1 stream should advance by exactly 60 seconds when
+            # the provider has a candle for every minute. A larger jump means
+            # the local stream may have missed candles, so recover before
+            # accepting the new stream candle.
+            if gap_seconds > 60:
+                self.recovering.add(symbol)
+                try:
+                    self.store.increment_recovery(symbol)
+                    await self.provider.recover(symbol)
+                finally:
+                    self.recovering.discard(symbol)
         self.store.upsert(symbol, candle)
 
     def states(self) -> dict[str, SymbolState]:
