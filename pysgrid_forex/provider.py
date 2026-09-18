@@ -5,13 +5,14 @@ import json
 import logging
 import random
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
 import websockets
 
 from .config import Settings
-from .models import Candle
+from .models import Candle, parse_timestamp
 
 log = logging.getLogger(__name__)
 CandleHandler = Callable[[str, Candle], Awaitable[None]]
@@ -51,18 +52,35 @@ class RealMarketAPI:
             return self._extract_candles(response.json())
 
     @staticmethod
-    def _extract_candles(body: object) -> list[Candle]:
+    def _completed_m1(candle: Candle) -> bool:
+        now = datetime.now(timezone.utc)
+        opened = parse_timestamp(candle.timestamp)
+        current_minute = now.replace(second=0, microsecond=0)
+        return opened <= current_minute - timedelta(minutes=1)
+
+    @classmethod
+    def _extract_candles(cls, body: object) -> list[Candle]:
+        def normalize(items: list[object]) -> list[Candle]:
+            result: list[Candle] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    candle = Candle.from_provider(item)
+                except (KeyError, ValueError, TypeError):
+                    continue
+                if cls._completed_m1(candle):
+                    result.append(candle)
+            return result
+
         if isinstance(body, dict):
             for key in ("data", "Data", "candles", "Candles", "items", "Items"):
                 value = body.get(key)
                 if isinstance(value, list):
-                    return [Candle.from_provider(x) for x in value if isinstance(x, dict)]
-            try:
-                return [Candle.from_provider(body)]
-            except (KeyError, ValueError, TypeError):
-                return []
+                    return normalize(value)
+            return normalize([body])
         if isinstance(body, list):
-            return [Candle.from_provider(x) for x in body if isinstance(x, dict)]
+            return normalize(body)
         return []
 
     async def recover(self, symbol: str) -> list[Candle]:
@@ -109,11 +127,9 @@ class RealMarketAPI:
                             for key in ("message", "payload", "result", "data", "Data"):
                                 nested = body.get(key)
                                 if isinstance(nested, dict):
-                                    try:
-                                        candles = [Candle.from_provider(nested)]
+                                    candles = self._extract_candles(nested)
+                                    if candles:
                                         break
-                                    except (KeyError, ValueError, TypeError):
-                                        pass
                         for candle in candles:
                             await self.on_candle(symbol, candle)
             except asyncio.CancelledError:
