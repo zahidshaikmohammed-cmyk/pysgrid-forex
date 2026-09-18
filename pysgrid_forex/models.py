@@ -7,7 +7,6 @@ from typing import Any
 
 def parse_timestamp(value: Any) -> datetime:
     if isinstance(value, (int, float)):
-        # Provider timestamps may be seconds or milliseconds.
         if value > 10_000_000_000:
             value /= 1000
         return datetime.fromtimestamp(value, tz=timezone.utc)
@@ -24,6 +23,8 @@ class Candle:
     low: float
     close: float
     volume: float
+    bid: float | None = None
+    ask: float | None = None
 
     @classmethod
     def from_provider(cls, payload: dict[str, Any]) -> "Candle":
@@ -33,16 +34,25 @@ class Candle:
                     return payload[name]
             raise KeyError(names[0])
 
+        def pick_optional(*names: str) -> Any | None:
+            for name in names:
+                if name in payload and payload[name] is not None:
+                    return payload[name]
+            return None
+
         dt = parse_timestamp(pick("OpenTime", "openTime", "timestamp", "Timestamp", "time"))
-        values = {
-            "timestamp": dt.isoformat().replace("+00:00", "Z"),
-            "open": float(pick("OpenPrice", "openPrice", "open", "Open")),
-            "high": float(pick("HighPrice", "highPrice", "high", "High")),
-            "low": float(pick("LowPrice", "lowPrice", "low", "Low")),
-            "close": float(pick("ClosePrice", "closePrice", "close", "Close")),
-            "volume": float(pick("Volume", "volume")),
-        }
-        candle = cls(**values)
+        bid_raw = pick_optional("Bid", "bid")
+        ask_raw = pick_optional("Ask", "ask")
+        candle = cls(
+            timestamp=dt.isoformat().replace("+00:00", "Z"),
+            open=float(pick("OpenPrice", "openPrice", "open", "Open")),
+            high=float(pick("HighPrice", "highPrice", "high", "High")),
+            low=float(pick("LowPrice", "lowPrice", "low", "Low")),
+            close=float(pick("ClosePrice", "closePrice", "close", "Close")),
+            volume=float(pick("Volume", "volume")),
+            bid=float(bid_raw) if bid_raw is not None else None,
+            ask=float(ask_raw) if ask_raw is not None else None,
+        )
         if not (candle.open > 0 and candle.high > 0 and candle.low > 0 and candle.close > 0):
             raise ValueError("OHLC prices must be positive")
         if candle.high < max(candle.open, candle.close):
@@ -51,6 +61,12 @@ class Candle:
             raise ValueError("low is above open/close")
         if candle.volume < 0:
             raise ValueError("volume cannot be negative")
+        if candle.bid is not None and candle.bid <= 0:
+            raise ValueError("bid must be positive")
+        if candle.ask is not None and candle.ask <= 0:
+            raise ValueError("ask must be positive")
+        if candle.bid is not None and candle.ask is not None and candle.ask < candle.bid:
+            raise ValueError("ask cannot be below bid")
         return candle
 
     def as_dict(self) -> dict[str, Any]:
