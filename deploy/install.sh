@@ -4,7 +4,7 @@ set -euo pipefail
 APP_DIR=/opt/pysgrid-forex
 ENV_DIR=/etc/pysgrid-forex
 
-sudo mkdir -p "$APP_DIR" "$ENV_DIR"
+sudo mkdir -p "$APP_DIR" "$APP_DIR/data" "$ENV_DIR"
 sudo chown -R ubuntu:ubuntu "$APP_DIR"
 
 cd "$APP_DIR"
