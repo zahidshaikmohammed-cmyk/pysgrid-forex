@@ -28,7 +28,22 @@ class Settings:
     rest_timeout_seconds: float = 15.0
     log_level: str = "INFO"
     rest_base: str = "https://api.realmarketapi.com/api/v1"
-    # RealMarketAPI's documented live candle stream is /price.
+    # RealMarketAPI's WebSocket candle-stream endpoint for timeFrame=M1.
+    #
+    # IMPORTANT: this endpoint's true bar resolution has NOT been
+    # independently confirmed against production credentials from within
+    # this codebase's CI/dev environment (no outbound network access to
+    # api.realmarketapi.com and no API key are available there). The
+    # sibling REST endpoint (`rest_base` + "/candle") is *known*, from a
+    # prior live probe, to silently return 5-minute-spaced bars even when
+    # timeFrame=M1 is requested -- so timeFrame=M1 alone must never be
+    # trusted as proof of genuine 1-minute resolution on this endpoint
+    # either. Run `tools/verify_m1_provider.py` against a real API key
+    # before depending on this feed. Independently of that verification,
+    # the runtime (engine.py + store.py) refuses to persist any candle as
+    # valid M1 unless it is confirmed to land exactly 60 seconds after the
+    # previous one, so a mislabeled feed is rejected rather than silently
+    # accepted regardless of what this endpoint turns out to deliver.
     ws_base: str = "wss://api.realmarketapi.com/candles"
 
     @classmethod

@@ -5,7 +5,11 @@ from pysgrid_forex.models import Candle
 from pysgrid_forex.provider import RealMarketAPI, _M1Accumulator
 
 
-def test_ws_url_uses_documented_price_stream():
+def test_ws_url_uses_configured_candles_endpoint():
+    """Pins the URL the app actually builds. This is a consistency check on
+    the code, not evidence that the endpoint delivers genuine M1 data --
+    that can only be established by tools/verify_m1_provider.py against a
+    real API key (see config.py's ws_base comment)."""
     s = Settings(api_key="secret", symbols=("XAUUSD",))
     p = RealMarketAPI(s, lambda *_: None)
     url = p._ws_url("XAUUSD")

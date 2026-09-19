@@ -58,4 +58,11 @@ curl http://127.0.0.1:8080/public/XAUUSD.json
 
 ## 5. Important
 
-The first deployment can run without a RealMarketAPI key. The service will report degraded/no-data rather than crash. After purchasing Plus, add the key to the Oracle environment and restart the service.
+The first deployment can run without a RealMarketAPI key. The service will report degraded/no-data rather
+than crash. After purchasing Plus, add the key to the Oracle environment and restart the service.
+
+Once a key is configured, every deploy runs `tools/verify_m1_provider.py` directly against the live
+WebSocket (independent of the application code) and fails the deploy if it does not observe a genuine
+60-second candle cadence for every configured symbol. This also means a deploy started while forex markets
+are closed (weekend) can legitimately fail the gate simply because no live candles are being produced at
+all -- that is expected, not a bug in the gate.

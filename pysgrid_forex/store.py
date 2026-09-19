@@ -1,18 +1,42 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
-from .models import Candle, SymbolState
+from .models import Candle, SymbolState, parse_timestamp
 
-DATA_SCHEMA_VERSION = 3
+log = logging.getLogger(__name__)
+
+# v4 adds write-time M1 contiguity enforcement (see append_candle). Any data
+# written by earlier schema versions may contain candles that were never
+# validated for genuine 1-minute spacing (including the previously observed
+# 5-minute /candle feed masquerading as M1), so it must not be trusted and is
+# invalidated exactly once on first load under this version.
+DATA_SCHEMA_VERSION = 4
+
+M1_SECONDS = 60
+
+
+class NonSequentialCandleError(ValueError):
+    """Raised when a candle would corrupt the store's M1 contiguity guarantee."""
 
 
 class CandleStore:
+    """Persists per-symbol OHLCV state.
+
+    The store enforces, at the point of write, that ``candles_1m`` can never
+    contain two adjacent entries that are not exactly 60 seconds apart unless
+    the caller explicitly acknowledges a gap (``allow_gap=True``). This makes
+    "every stored candle is genuine M1" a property of the storage layer
+    itself, not something callers have to get right, and it holds regardless
+    of what the last two entries happen to look like.
+    """
+
     def __init__(self, data_dir: str, max_candles: int = 500):
         self.root = Path(data_dir)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -22,6 +46,24 @@ class CandleStore:
 
     def _path(self, symbol: str) -> Path:
         return self.root / f"{symbol}.json"
+
+    @staticmethod
+    def _validate_monotonic(candles: list[Candle]) -> bool:
+        """True if candles are strictly increasing in time (gaps allowed).
+
+        Real M1 feeds legitimately have gaps (weekend closures, brief
+        provider outages), so a gap alone is not corruption. What must never
+        happen is a non-positive step: a duplicate, backwards, or otherwise
+        impossible timestamp sequence, which can only mean the persisted
+        data was produced by logic that bypassed ``append_candle``.
+        """
+        for previous, current in zip(candles, candles[1:]):
+            delta = (
+                parse_timestamp(current.timestamp) - parse_timestamp(previous.timestamp)
+            ).total_seconds()
+            if delta <= 0:
+                return False
+        return True
 
     def load(self, symbol: str) -> SymbolState:
         with self._lock:
@@ -35,8 +77,6 @@ class CandleStore:
                 try:
                     raw = json.loads(path.read_text(encoding="utf-8"))
 
-                    # v1 data may contain the previously observed 5-minute
-                    # /candle feed masquerading as M1. Reset it exactly once.
                     if raw.get("data_schema_version") != DATA_SCHEMA_VERSION:
                         self._states[symbol] = state
                         return state
@@ -48,18 +88,20 @@ class CandleStore:
                     state.websocket_connected = bool(raw.get("websocket_connected", False))
                     state.reconnect_count = int(raw.get("reconnect_count", 0))
                     state.gap_recoveries = int(raw.get("gap_recoveries", 0))
-                    candles = [
-                        Candle(**x)
-                        for x in raw.get("candles_1m", [])
-                    ]
-                    for previous, current in zip(candles, candles[1:]):
-                        delta = (
-                            datetime.fromisoformat(current.timestamp.replace("Z", "+00:00"))
-                            - datetime.fromisoformat(previous.timestamp.replace("Z", "+00:00"))
-                        ).total_seconds()
-                        if delta != 60:
-                            raise ValueError("stored candle series is not M1")
-                    state.candles = candles[-self.max_candles:]
+                    state.rejected_count = int(raw.get("rejected_count", 0))
+                    candles = [Candle(**x) for x in raw.get("candles_1m", [])]
+
+                    if not self._validate_monotonic(candles):
+                        log.error(
+                            "Persisted candle series for %s is not monotonic; "
+                            "discarding on-disk history",
+                            symbol,
+                        )
+                        raise ValueError("stored candle series is not monotonic")
+
+                    state.candles = candles[-self.max_candles :]
+                    if state.candles:
+                        state.last_candle_timestamp = state.candles[-1].timestamp
                 except (OSError, ValueError, TypeError, KeyError):
                     state = SymbolState(symbol=symbol, candles=[])
 
@@ -69,28 +111,59 @@ class CandleStore:
     def all_states(self, symbols: tuple[str, ...]) -> dict[str, SymbolState]:
         return {s: self.load(s) for s in symbols}
 
-    def upsert(self, symbol: str, candle: Candle) -> bool:
+    def append_candle(self, symbol: str, candle: Candle, *, allow_gap: bool = False) -> bool:
+        """Append a completed candle, enforcing the M1 contiguity invariant.
+
+        - An empty store accepts any first candle.
+        - A candle whose timestamp equals the last stored one is treated as
+          an idempotent correction (safe re-delivery), not a new bar.
+        - A candle exactly 60 seconds after the last stored one is a normal
+          continuation and is always accepted.
+        - Anything else (a duplicate/backwards timestamp, or a jump of any
+          other size) is rejected with ``NonSequentialCandleError`` unless
+          the caller passes ``allow_gap=True``, which only the engine's
+          confirmed-resync path is allowed to do (see Engine.on_candle). A
+          gap is recorded as-is; no intermediate candles are fabricated.
+
+        Returns True if the stored state changed.
+        """
         with self._lock:
             state = self.load(symbol)
-            existing = {c.timestamp: c for c in (state.candles or [])}
-            changed = existing.get(candle.timestamp) != candle
-            existing[candle.timestamp] = candle
-            state.candles = sorted(
-                existing.values(),
-                key=lambda c: c.timestamp,
-            )[-self.max_candles:]
-            state.last_candle_timestamp = (
-                state.candles[-1].timestamp if state.candles else None
-            )
-            state.updated_at = (
-                datetime.now(timezone.utc)
-                .isoformat()
-                .replace("+00:00", "Z")
-            )
+            candles = list(state.candles or [])
+
+            if candles:
+                last = candles[-1]
+                delta = (
+                    parse_timestamp(candle.timestamp) - parse_timestamp(last.timestamp)
+                ).total_seconds()
+
+                if delta == 0:
+                    if last == candle:
+                        return False
+                    candles[-1] = candle
+                elif delta < 0:
+                    raise NonSequentialCandleError(
+                        f"{symbol}: candle at {candle.timestamp} is not after "
+                        f"the last stored candle at {last.timestamp}"
+                    )
+                elif delta != M1_SECONDS and not allow_gap:
+                    raise NonSequentialCandleError(
+                        f"{symbol}: candle at {candle.timestamp} is {delta:.0f}s "
+                        f"after the last stored candle at {last.timestamp}, "
+                        "expected exactly 60s"
+                    )
+                else:
+                    candles.append(candle)
+            else:
+                candles.append(candle)
+
+            state.candles = candles[-self.max_candles :]
+            state.last_candle_timestamp = state.candles[-1].timestamp
+            state.updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             state.status = "ok"
             state.market_state = "open"
             self._persist(state)
-            return changed
+            return True
 
     def mark_socket(self, symbol: str, connected: bool) -> None:
         state = self.load(symbol)
@@ -105,6 +178,11 @@ class CandleStore:
     def increment_recovery(self, symbol: str) -> None:
         state = self.load(symbol)
         state.gap_recoveries += 1
+        self._persist(state)
+
+    def increment_rejected(self, symbol: str) -> None:
+        state = self.load(symbol)
+        state.rejected_count += 1
         self._persist(state)
 
     def _persist(self, state: SymbolState) -> None:

@@ -83,10 +83,11 @@ class SymbolState:
     websocket_connected: bool = False
     reconnect_count: int = 0
     gap_recoveries: int = 0
+    rejected_count: int = 0
     candles: list[Candle] | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, m1_valid: bool | None = None) -> dict[str, Any]:
+        payload = {
             "symbol": self.symbol,
             "market_state": self.market_state,
             "status": self.status,
@@ -95,5 +96,9 @@ class SymbolState:
             "websocket_connected": self.websocket_connected,
             "reconnect_count": self.reconnect_count,
             "gap_recoveries": self.gap_recoveries,
+            "rejected_count": self.rejected_count,
             "candles_1m": [c.as_dict() for c in (self.candles or [])],
         }
+        if m1_valid is not None:
+            payload["m1_valid"] = m1_valid
+        return payload

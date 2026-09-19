@@ -50,10 +50,13 @@ class _M1Accumulator:
             return None
 
         if ts == current_ts:
-            # RealMarketAPI /price emits repeated updates for the forming
-            # timeframe candle. OHLC and volume are cumulative within that
-            # candle, so retain the first open and latest close/quote while
-            # taking the widest observed range and latest volume.
+            # RealMarketAPI's WebSocket emits repeated updates for the
+            # forming timeframe candle. OHLC and volume are cumulative
+            # within that candle, so retain the first open and latest
+            # close/quote while taking the widest observed range and latest
+            # volume. (This bucketing only detects candle *boundaries* --
+            # whether a boundary is actually 60 seconds away from the last
+            # one it hands off is validated by the engine, not here.)
             self.current = Candle(
                 timestamp=self.current.timestamp,
                 open=self.current.open,

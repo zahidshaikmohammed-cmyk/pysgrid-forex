@@ -36,7 +36,8 @@ async def shutdown() -> None:
 async def health() -> dict:
     states = engine.states()
     live = sum(1 for s in states.values() if s.status == "ok")
-    m1_live = sum(1 for s in states.values() if engine.is_valid_m1(s))
+    m1_status = {symbol: engine.is_valid_m1(state) for symbol, state in states.items()}
+    m1_live = sum(1 for ok in m1_status.values() if ok)
     return {
         "service": "pysgrid-forex",
         "status": "ok" if live else "degraded",
@@ -46,6 +47,11 @@ async def health() -> dict:
         "symbol_count": len(settings.symbols),
         "live_symbols": live,
         "m1_live_symbols": m1_live,
+        # Explicit per-symbol M1 integrity, and the single boolean the
+        # deployment gate relies on: production is healthy only when every
+        # configured symbol -- not just one -- has a validated M1 feed.
+        "m1_status": m1_status,
+        "all_m1_live": bool(settings.symbols) and m1_live == len(settings.symbols),
         "api_key_configured": bool(settings.api_key),
     }
 
@@ -62,7 +68,9 @@ async def metrics() -> dict:
                 "websocket_connected": state.websocket_connected,
                 "reconnect_count": state.reconnect_count,
                 "gap_recoveries": state.gap_recoveries,
+                "rejected_count": state.rejected_count,
                 "candle_count": len(state.candles or []),
+                "m1_valid": engine.is_valid_m1(state),
             }
             for symbol, state in states.items()
         },
@@ -102,7 +110,8 @@ async def live() -> JSONResponse:
         "status": "ok" if any(s.status == "ok" for s in states.values()) else "degraded",
         "universe_size": len(settings.symbols),
         "symbols": {
-            symbol: state.to_dict() for symbol, state in states.items()
+            symbol: state.to_dict(m1_valid=engine.is_valid_m1(state))
+            for symbol, state in states.items()
         },
     })
 
@@ -110,7 +119,11 @@ async def live() -> JSONResponse:
 @app.get("/public/forex.json")
 async def forex() -> JSONResponse:
     states = engine.states()
-    symbols = {s: states[s].to_dict() for s in settings.symbols if s not in {"XAUUSD", "XAGUSD", "USOIL"}}
+    symbols = {
+        s: states[s].to_dict(m1_valid=engine.is_valid_m1(states[s]))
+        for s in settings.symbols
+        if s not in {"XAUUSD", "XAGUSD", "USOIL"}
+    }
     return JSONResponse({
         "schema_version": "1.0",
         "service": "pysgrid-forex",

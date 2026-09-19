@@ -78,20 +78,33 @@ jobs:
                 sleep 2
               done
 
-              echo "Waiting for at least one validated M1 symbol..."
+              echo "Waiting for ALL configured symbols to report a validated M1 feed..."
               for attempt in $(seq 1 90); do
                 health=$(curl --fail --silent --show-error http://127.0.0.1:8080/health)
                 echo "$health"
-                m1=$(printf '%s' "$health" | grep -o "\"m1_live_symbols\":[0-9]*" | cut -d: -f2)
-                if [ "$m1" -ge 1 ]; then
-                  echo "Validated live M1 feed is active on attempt $attempt."
-                  exit 0
+                all_live=$(printf '%s' "$health" | grep -o "\"all_m1_live\":[a-z]*" | cut -d: -f2)
+                if [ "$all_live" = "true" ]; then
+                  echo "Every configured symbol has a validated live M1 feed on attempt $attempt."
+                  break
+                fi
+                if [ "$attempt" -eq 90 ]; then
+                  echo "Not every configured symbol reached a validated M1 feed after 180 seconds."
+                  printf "%s" "$health" | grep -o "\"m1_status\":{[^}]*}" || true
+                  sudo systemctl --no-pager --full status pysgrid-forex || true
+                  sudo journalctl -u pysgrid-forex -n 160 --no-pager || true
+                  exit 1
                 fi
                 sleep 2
               done
 
-              echo "No validated M1 symbols after 180 seconds."
-              sudo systemctl --no-pager --full status pysgrid-forex || true
-              sudo journalctl -u pysgrid-forex -n 160 --no-pager || true
-              exit 1
+              echo "Independently verifying provider cadence on the wire (bypassing the app)..."
+              cd /opt/pysgrid-forex
+              set -a
+              . /etc/pysgrid-forex/pysgrid-forex.env
+              set +a
+              symbols="${PYSGRID_SYMBOLS:-XAUUSD,EURUSD,GBPUSD,USDJPY,GBPJPY,AUDUSD,USDCAD,NZDUSD,XAGUSD,USOIL}"
+              if ! .venv/bin/python tools/verify_m1_provider.py --symbols "$symbols" --timeout 150; then
+                echo "Independent provider probe did not confirm a genuine 60s M1 cadence for every symbol."
+                exit 1
+              fi
             '
