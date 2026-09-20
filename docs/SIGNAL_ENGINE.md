@@ -48,15 +48,29 @@ For a local dev feed instead of the deployed one, leave `PYSGRID_API_BASE`
 unset (it defaults to `http://127.0.0.1:8080`) and run pysgrid-forex's own
 `uvicorn pysgrid_forex.api:app` alongside it.
 
+**You do not need to watch the terminal.** In continuous mode (the default,
+no `--once`), it only reprints the full table when a symbol's action
+actually changes, or while a BUY/SELL is currently live -- otherwise it
+prints a single quiet heartbeat line per poll (`[12:34:56 UTC] no change
+(10/10 WAIT)`) so you can tell at a glance it's still running without being
+spammed by an identical table every 60 seconds. The moment a real BUY/SELL
+appears, it rings the terminal bell and, if you `pip install plyer`, also
+fires a desktop toast notification -- so you can leave it running minimized
+and still notice. Every poll is still logged to `signals/YYYY-MM-DD.jsonl`
+regardless of what gets printed, so nothing is lost between the lines you
+see.
+
 Useful flags:
 
 - `--once` -- one pass, then exit (good for a scheduled task / cron-style run)
+- `--always` -- print every poll in full, even with no change (the old default)
 - `--detail` -- print the full itemized rationale, not just a summary table
 - `--no-color` -- disable ANSI colors (some PowerShell hosts render them oddly)
 - `--symbols XAUUSD,EURUSD` -- override the symbol list for this run
 
-Every generated signal (BUY, SELL, or WAIT, with its full rationale) is also
-appended to `signals/YYYY-MM-DD.jsonl` so a day's calls can be reviewed or
+Every generated signal (BUY, SELL, or WAIT, with its full rationale) is
+appended to `signals/YYYY-MM-DD.jsonl` on every poll -- whether or not it
+was printed to the terminal -- so a day's calls can be reviewed or
 back-tested against afterwards.
 
 ## Configuration (environment variables)

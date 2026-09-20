@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Action, Signal
+
+log = logging.getLogger(__name__)
 
 _ACTION_COLOR = {
     Action.BUY: "\033[92m",   # green
@@ -43,6 +46,46 @@ def format_detail(signal: Signal) -> str:
     for r in signal.reasons:
         lines.append(f"    - {r}")
     return "\n".join(lines)
+
+
+def diff_actions(previous: dict[str, Action], signals: list[Signal]) -> tuple[list[Signal], list[Signal]]:
+    """Compares this poll's actions against the last poll's, per symbol.
+
+    Returns (changed, actionable): `changed` is every signal whose action
+    differs from what it was last poll (including the very first poll, where
+    "previous" is unknown for everything); `actionable` is every signal that
+    is currently BUY or SELL, changed or not. `previous` is mutated in place
+    to the new state, so the caller just keeps passing the same dict back in.
+    """
+    changed = []
+    actionable = []
+    for s in signals:
+        if previous.get(s.symbol) != s.action:
+            changed.append(s)
+        if s.action != Action.WAIT:
+            actionable.append(s)
+        previous[s.symbol] = s.action
+    return changed, actionable
+
+
+def alert_actionable(signals: list[Signal]) -> None:
+    """Best-effort way to notice a real BUY/SELL without staring at the
+    terminal: a terminal bell (works everywhere, including PowerShell) plus
+    a desktop toast notification if the optional `plyer` package is
+    installed (`pip install plyer`). Never raises -- a notification failure
+    must not take down the polling loop."""
+    if not signals:
+        return
+
+    print("\a", end="", flush=True)
+
+    try:
+        from plyer import notification
+
+        summary = "; ".join(f"{s.symbol} {s.action.value} ({s.confidence:.0f}%)" for s in signals)
+        notification.notify(title="pysgrid-forex signal", message=summary, timeout=20)
+    except Exception as exc:  # noqa: BLE001 - a missing/broken notifier must never crash the loop
+        log.debug("Desktop notification unavailable (pip install plyer for one): %s", exc)
 
 
 class DailySignalLog:

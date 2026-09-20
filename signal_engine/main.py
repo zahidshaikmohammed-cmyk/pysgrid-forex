@@ -2,9 +2,17 @@
 
 Run from the pysgrid-forex repo root:
 
-    python -m signal_engine.main               # continuous, prints every poll
+    python -m signal_engine.main               # continuous, quiet until something changes
     python -m signal_engine.main --once         # one pass, then exit
     python -m signal_engine.main --detail       # full rationale, not just the table
+    python -m signal_engine.main --always       # print every poll, even with no change
+
+By default, continuous mode does NOT reprint the full table every poll --
+that just trains you to stop looking at it. It only prints in full when a
+symbol's action actually changes or a BUY/SELL is currently live, and rings
+the terminal bell (plus a desktop notification if `plyer` is installed) the
+moment a real BUY/SELL appears. Every poll is still logged to disk either
+way, so nothing is lost between the terminal lines you do see.
 
 This is a decision-support tool: it reads the validated M1 feed pysgrid-forex
 serves, and outputs BUY/SELL/WAIT calls with an explicit rationale and
@@ -24,7 +32,8 @@ from datetime import datetime, timezone
 from .calendar_feed import CalendarFeed
 from .config import EngineConfig
 from .feed_client import FeedClient
-from .reporter import DailySignalLog, format_detail, format_table
+from .models import Action
+from .reporter import DailySignalLog, alert_actionable, diff_actions, format_detail, format_table
 from .strategy import generate_signal
 
 log = logging.getLogger("signal_engine")
@@ -45,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--once", action="store_true", help="Run a single pass and exit")
     parser.add_argument("--detail", action="store_true", help="Print full rationale for every symbol, not just a table")
+    parser.add_argument("--always", action="store_true", help="Print every poll in continuous mode, even with no change")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (useful in plain PowerShell)")
     parser.add_argument("--api-base", default=None, help="Override PYSGRID_API_BASE")
     parser.add_argument("--symbols", default=None, help="Comma-separated symbol override")
@@ -67,22 +77,35 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     signal_log = DailySignalLog(config.signals_dir)
+    previous_actions: dict[str, Action] = {}
+    first_poll = True
 
     with FeedClient(config) as feed, CalendarFeed(config) as calendar:
         try:
             while True:
                 signals = run_once(config, feed, calendar)
                 signal_log.append_many(signals)
+                changed, actionable = diff_actions(previous_actions, signals)
 
                 timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                print(f"\n=== {timestamp} ===")
-                if args.detail:
-                    for s in signals:
-                        print(format_detail(s))
-                        print()
-                else:
-                    print(format_table(signals, color=not args.no_color))
+                should_print = args.once or args.always or first_poll or bool(changed) or bool(actionable)
 
+                if should_print:
+                    print(f"\n=== {timestamp} ===")
+                    if args.detail:
+                        for s in signals:
+                            print(format_detail(s))
+                            print()
+                    else:
+                        print(format_table(signals, color=not args.no_color))
+                else:
+                    waiting = sum(1 for s in signals if s.action == Action.WAIT)
+                    print(f"[{timestamp}] no change ({waiting}/{len(signals)} WAIT)")
+
+                if actionable:
+                    alert_actionable(actionable)
+
+                first_poll = False
                 if args.once:
                     break
                 time.sleep(config.poll_interval_seconds)
