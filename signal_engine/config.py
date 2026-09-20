@@ -62,6 +62,12 @@ class EngineConfig:
     signals_dir: str = "./signals"
     log_level: str = "INFO"
 
+    # Telegram alerts (optional). Both must be set for this channel to be
+    # active; leaving either blank silently disables it, other alert paths
+    # (terminal bell, plyer desktop toast) still work regardless.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
     @classmethod
     def from_env(cls) -> "EngineConfig":
         return cls(
@@ -73,4 +79,6 @@ class EngineConfig:
             min_confidence_to_trade=float(os.getenv("SIGNAL_MIN_CONFIDENCE", "60")),
             signals_dir=os.getenv("SIGNAL_LOG_DIR", "./signals"),
             log_level=os.getenv("SIGNAL_LOG_LEVEL", "INFO").upper(),
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
         )

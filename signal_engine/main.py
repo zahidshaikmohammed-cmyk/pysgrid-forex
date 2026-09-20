@@ -6,6 +6,7 @@ Run from the pysgrid-forex repo root:
     python -m signal_engine.main --once         # one pass, then exit
     python -m signal_engine.main --detail       # full rationale, not just the table
     python -m signal_engine.main --always       # print every poll, even with no change
+    python -m signal_engine.main --test-telegram  # verify Telegram alerts, then exit
 
 By default, continuous mode does NOT reprint the full table every poll --
 that just trains you to stop looking at it. It only prints in full when a
@@ -35,6 +36,7 @@ from .feed_client import FeedClient
 from .models import Action
 from .reporter import DailySignalLog, alert_actionable, diff_actions, format_detail, format_table
 from .strategy import generate_signal
+from .telegram_notifier import TelegramNotifier
 
 log = logging.getLogger("signal_engine")
 
@@ -58,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (useful in plain PowerShell)")
     parser.add_argument("--api-base", default=None, help="Override PYSGRID_API_BASE")
     parser.add_argument("--symbols", default=None, help="Comma-separated symbol override")
+    parser.add_argument(
+        "--test-telegram", action="store_true",
+        help="Send one test Telegram message using TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID, then exit",
+    )
     args = parser.parse_args(argv)
 
     config = EngineConfig.from_env()
@@ -68,6 +74,15 @@ def main(argv: list[str] | None = None) -> int:
         config = replace(config, symbols=symbols)
 
     logging.basicConfig(level=config.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    if args.test_telegram:
+        with TelegramNotifier(config) as telegram:
+            if not telegram.enabled:
+                print("Telegram is not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID first.")
+                return 1
+            ok = telegram.send("pysgrid-forex signal engine: Telegram alerts are working.")
+            print("Sent OK -- check Telegram." if ok else "Send failed -- check the warning above for why.")
+            return 0 if ok else 1
 
     print(f"pysgrid-forex signal engine -- feed: {config.api_base}")
     print(f"symbols: {', '.join(config.symbols)}")
@@ -80,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
     previous_actions: dict[str, Action] = {}
     first_poll = True
 
-    with FeedClient(config) as feed, CalendarFeed(config) as calendar:
+    with FeedClient(config) as feed, CalendarFeed(config) as calendar, TelegramNotifier(config) as telegram:
+        print(f"Telegram alerts: {'enabled' if telegram.enabled else 'disabled (see --test-telegram)'}\n")
         try:
             while True:
                 signals = run_once(config, feed, calendar)
@@ -104,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 if actionable:
                     alert_actionable(actionable)
+                    telegram.notify_signals(actionable)
 
                 first_poll = False
                 if args.once:

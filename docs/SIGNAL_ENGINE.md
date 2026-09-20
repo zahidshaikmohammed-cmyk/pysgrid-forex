@@ -60,6 +60,32 @@ and still notice. Every poll is still logged to `signals/YYYY-MM-DD.jsonl`
 regardless of what gets printed, so nothing is lost between the lines you
 see.
 
+### Telegram alerts (reachable away from the PC)
+
+The bell and desktop toast only help if you're near the machine. For an
+alert that reaches your phone, set up Telegram:
+
+1. Message **@BotFather** on Telegram, send `/newbot`, follow the prompts.
+   You get a bot token like `123456789:AAExampleTokenValue`.
+2. Send your new bot any message (e.g. "hi") so it has a chat to reply to.
+3. Open `https://api.telegram.org/bot<your-token>/getUpdates` in a browser
+   and find `"chat":{"id": ...}` in the response -- that's your chat ID.
+   (For a group: add the bot to the group first, send a message there, then
+   look for the group's chat id, usually negative, the same way.)
+4. Set both, then verify before trusting it:
+   ```powershell
+   $env:TELEGRAM_BOT_TOKEN = "123456789:AAExampleTokenValue"
+   $env:TELEGRAM_CHAT_ID = "987654321"
+   python -m signal_engine.main --test-telegram
+   ```
+   This sends one test message and exits -- confirm it actually arrives in
+   Telegram before relying on it during a real session. It was not (and
+   could not be) tested against Telegram's live API from the sandboxed
+   environment this was built in, so this check is not optional.
+5. Once confirmed, just leave both environment variables set and run the
+   engine normally -- every BUY/SELL poll now also posts to that chat,
+   alongside the bell/toast.
+
 Useful flags:
 
 - `--once` -- one pass, then exit (good for a scheduled task / cron-style run)
@@ -67,6 +93,7 @@ Useful flags:
 - `--detail` -- print the full itemized rationale, not just a summary table
 - `--no-color` -- disable ANSI colors (some PowerShell hosts render them oddly)
 - `--symbols XAUUSD,EURUSD` -- override the symbol list for this run
+- `--test-telegram` -- send one test Telegram message and exit
 
 Every generated signal (BUY, SELL, or WAIT, with its full rationale) is
 appended to `signals/YYYY-MM-DD.jsonl` on every poll -- whether or not it
@@ -85,6 +112,8 @@ back-tested against afterwards.
 | `SIGNAL_MIN_CONFIDENCE` | `60` | Minimum score (0-100) required to output BUY/SELL instead of WAIT |
 | `SIGNAL_LOG_DIR` | `./signals` | Where the daily JSONL signal log is written |
 | `SIGNAL_LOG_LEVEL` | `INFO` | Python logging level |
+| `TELEGRAM_BOT_TOKEN` | unset | Bot token from @BotFather; alerts disabled if unset |
+| `TELEGRAM_CHAT_ID` | unset | Chat/group ID to post BUY/SELL alerts to |
 
 ## Honest limitations -- read this before trusting a signal
 
