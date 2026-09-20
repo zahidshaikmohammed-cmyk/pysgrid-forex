@@ -37,7 +37,22 @@ pysgrid-forex /public/{symbol}.json  (validated M1, m1_valid flag)
 
 ## Running it
 
-From the `pysgrid-forex` repo root, in PowerShell:
+**Persistent config (recommended)** -- do this once so you never have to
+retype `$env:...` in a fresh terminal again:
+
+```powershell
+cd pysgrid-forex
+copy signal_engine\.env.example .env
+notepad .env    # fill in PYSGRID_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, etc.
+python -m signal_engine.main
+```
+
+`.env` lives in the repo root (it's already gitignored -- never commit it)
+and is loaded automatically on startup. Anything you *do* set with
+`$env:X = "..."` in your current shell still overrides the file, so this
+never fights with a one-off override.
+
+**One-off / no `.env`**, in PowerShell:
 
 ```powershell
 $env:PYSGRID_API_BASE = "https://your-oracle-host-or-domain"   # your deployed feed
@@ -72,7 +87,8 @@ alert that reaches your phone, set up Telegram:
    and find `"chat":{"id": ...}` in the response -- that's your chat ID.
    (For a group: add the bot to the group first, send a message there, then
    look for the group's chat id, usually negative, the same way.)
-4. Set both, then verify before trusting it:
+4. Set both (in `.env`, so it sticks -- see above -- or with `$env:` for a
+   one-off), then verify before trusting it:
    ```powershell
    $env:TELEGRAM_BOT_TOKEN = "123456789:AAExampleTokenValue"
    $env:TELEGRAM_CHAT_ID = "987654321"

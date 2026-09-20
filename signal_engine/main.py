@@ -1,6 +1,9 @@
 """Forex signal engine CLI.
 
-Run from the pysgrid-forex repo root:
+Run from the pysgrid-forex repo root. Put persistent settings (API base,
+Telegram credentials, etc.) in a `.env` file there instead of retyping
+`$env:X = ...` in every fresh terminal -- see .env.example. Anything you
+DO set with `$env:` still overrides the file.
 
     python -m signal_engine.main               # continuous, quiet until something changes
     python -m signal_engine.main --once         # one pass, then exit
@@ -32,6 +35,7 @@ from datetime import datetime, timezone
 
 from .calendar_feed import CalendarFeed
 from .config import EngineConfig
+from .dotenv import load_dotenv
 from .feed_client import FeedClient
 from .models import Action
 from .reporter import DailySignalLog, alert_actionable, diff_actions, format_detail, format_table
@@ -53,6 +57,8 @@ def run_once(config: EngineConfig, feed: FeedClient, calendar: CalendarFeed | No
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
+
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--once", action="store_true", help="Run a single pass and exit")
     parser.add_argument("--detail", action="store_true", help="Print full rationale for every symbol, not just a table")
