@@ -1,10 +1,22 @@
 # Pysgrid Forex
 
-Production-ready 1-minute OHLCV ingestion for Pysgrid using RealMarketAPI.
+Production-ready 1-minute OHLCV ingestion for Pysgrid using RealMarketAPI,
+plus a signal engine that turns that feed into BUY/SELL/WAIT decision
+support.
 
-## Architecture
+## Components
 
-RealMarketAPI `/candles` WebSocket -> engine resync/contiguity gate -> store-level write-time M1 enforcement -> durable local state -> FastAPI JSON endpoints -> Oracle VM/systemd -> GitHub Actions deployment (with an independent on-the-wire M1 cadence probe as a deploy gate).
+1. **`pysgrid_forex/`** -- the data-feed service. RealMarketAPI `/candles`
+   WebSocket -> engine resync/contiguity gate -> store-level write-time M1
+   enforcement -> durable local state -> FastAPI JSON endpoints ->
+   Oracle VM/systemd -> GitHub Actions deployment (with an independent
+   on-the-wire M1 cadence probe as a deploy gate).
+2. **`signal_engine/`** -- consumes that feed over HTTP and generates
+   BUY/SELL/WAIT calls with a full itemized rationale (trend, structure,
+   momentum, pattern, session, news-risk). See
+   [`docs/SIGNAL_ENGINE.md`](docs/SIGNAL_ENGINE.md) for its architecture,
+   exact run command, and honest limitations -- read the limitations
+   section before trusting a signal.
 
 The provider API key is never committed. Set `REALMARKET_API_KEY` in the runtime environment.
 
@@ -65,6 +77,18 @@ Dry-run does not require an API key.
 export REALMARKET_API_KEY='...'
 uvicorn pysgrid_forex.api:app --host 0.0.0.0 --port 8080
 ```
+
+## Running the signal engine
+
+From a fresh PowerShell terminal, against your deployed feed:
+
+```powershell
+$env:PYSGRID_API_BASE = "https://your-oracle-host-or-domain"
+python -m signal_engine.main
+```
+
+See [`docs/SIGNAL_ENGINE.md`](docs/SIGNAL_ENGINE.md) for flags, configuration,
+and -- importantly -- what it can't actually do yet.
 
 ## Endpoints
 

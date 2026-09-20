@@ -7,5 +7,6 @@ __pycache__/
 !.env.example
 data/
 logs/
+signals/
 *.log
 .DS_Store
