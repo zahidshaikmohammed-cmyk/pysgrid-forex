@@ -1,7 +1,10 @@
-"""Tests for Engine's dispatch to both the M1 and M5 acceptance paths from
-a single stream of raw candles -- the actual point of the M5 pipeline: the
-same provider connection and the same raw candles feed both, and each
-independently decides whether to trust them for its own period."""
+"""End-to-end tests for Engine's M1 -> M5 pipeline: RealMarketAPI's WebSocket
+delivers raw candles to Engine.on_candle, which validates them as M1 and,
+for every candle it actually accepts into candles_1m, forwards that exact
+candle onward to the M1->M5 aggregator (see engine.py's _store_m1 and
+m5_engine.py's module docstring for why aggregation -- not raw-candle
+cadence validation -- is the correct design now that RealMarketAPI has
+confirmed its M1 feed is genuine again)."""
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -18,8 +21,9 @@ def _candle(ts: datetime, close: float = 100.0) -> Candle:
     )
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(second=0, microsecond=0)
+def _boundary() -> datetime:
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    return now - timedelta(minutes=now.minute % 5)
 
 
 def _engine(tmp_path) -> Engine:
@@ -30,31 +34,31 @@ def _engine(tmp_path) -> Engine:
     return Engine(settings)
 
 
-def test_dispatch_feeds_both_pipelines_from_the_same_raw_candle_stream(tmp_path):
-    """Reproduces the real-world finding this whole pipeline exists for:
-    the provider actually sends candles 300s apart. Fed through _dispatch,
-    the M1 path must keep correctly rejecting them (m1_valid stays False)
-    while the M5 path correctly accepts and validates them."""
+def test_ten_genuine_m1_candles_produce_two_valid_m5_candles(tmp_path):
+    """The real end-to-end scenario this whole pipeline exists for again:
+    RealMarketAPI now sends genuine 60-second-spaced M1 candles. Fed
+    through the actual provider -> Engine.on_candle path, M1 must accept
+    them normally, and the M5 aggregator (fed only Engine's own validated
+    output) must turn every five of them into one completed M5 candle."""
     engine = _engine(tmp_path)
-    now = _now()
-    candles = [_candle(now - timedelta(minutes=5 * i)) for i in range(3, -1, -1)]  # 300s apart, oldest first
+    boundary = _boundary()
+    candles = [_candle(boundary + timedelta(minutes=i)) for i in range(10)]
 
     async def feed():
         for c in candles:
-            await engine._dispatch("XAUUSD", c)
+            await engine.on_candle("XAUUSD", c)
 
     asyncio.run(feed())
 
     m1_state = engine.store.load("XAUUSD")
     m5_state = engine.m5_store.load("XAUUSD")
 
-    # M1 store: nothing is ever confirmed, since no two candles are 60s apart.
-    assert m1_state.candles == []
-    assert engine.is_valid_m1(m1_state) is False
+    assert len(m1_state.candles) == 10
+    assert engine.is_valid_m1(m1_state) is True
 
-    # M5 store: same raw candles, correctly recognized as a genuine 300s cadence.
-    assert len(m5_state.candles) >= 2
+    assert len(m5_state.candles) == 2
     assert M5Engine.is_valid(m5_state) is True
+    assert m5_state.candles[0].timestamp == boundary.isoformat().replace("+00:00", "Z")
 
 
 def test_on_status_mirrors_connection_state_to_both_stores(tmp_path):
@@ -71,20 +75,50 @@ def test_on_status_mirrors_connection_state_to_both_stores(tmp_path):
     assert engine.m5_store.load("XAUUSD").reconnect_count == 1
 
 
-def test_m1_rejection_does_not_block_m5_acceptance_of_the_same_candle(tmp_path):
-    """A candle the M1 path discards outright (e.g. a 300s jump treated as
-    an unconfirmed anchor) must still reach the M5 path independently --
-    _dispatch must not let one path's decision short-circuit the other."""
+def test_m1_rejected_candle_never_reaches_the_m5_aggregator(tmp_path):
+    """A candle the M1 path discards outright (out-of-order, unparseable,
+    or an unconfirmed resync anchor still awaiting confirmation) must never
+    reach the M5 aggregator -- only candles that actually land in
+    candles_1m may ever be aggregated."""
     engine = _engine(tmp_path)
-    now = _now()
+    boundary = _boundary()
 
     async def feed():
-        await engine._dispatch("XAUUSD", _candle(now - timedelta(minutes=10)))
-        await engine._dispatch("XAUUSD", _candle(now - timedelta(minutes=5)))
-        await engine._dispatch("XAUUSD", _candle(now))
+        # First candle is held as an unconfirmed seed (M1 engine behavior),
+        # never stored, and therefore must never reach the aggregator.
+        await engine.on_candle("XAUUSD", _candle(boundary))
+        assert engine.m5_store.load("XAUUSD").candles == []
+
+        # An out-of-order candle (before the still-pending seed) is rejected
+        # outright by the M1 engine and must not leak into M5 either.
+        await engine.on_candle("XAUUSD", _candle(boundary - timedelta(minutes=1)))
+        assert engine.m5_store.load("XAUUSD").candles == []
 
     asyncio.run(feed())
 
-    m5_state = engine.m5_store.load("XAUUSD")
-    assert len(m5_state.candles) == 3
-    assert M5Engine.is_valid(m5_state) is True
+
+def test_confirmed_m1_resync_forwards_both_halves_to_the_aggregator_in_order(tmp_path):
+    """When the M1 engine confirms a resync (a gap, then a candle exactly
+    60s after the pending anchor), it commits BOTH the anchor and the
+    confirming candle to candles_1m -- and both must reach the aggregator,
+    in that same order, so a legitimate M1 gap correctly breaks the M5
+    bucket instead of silently gluing two unrelated windows together."""
+    engine = _engine(tmp_path)
+    boundary = _boundary()
+
+    async def feed():
+        for i in range(3):
+            await engine.on_candle("XAUUSD", _candle(boundary + timedelta(minutes=i)))
+        # A big jump to the next 5-minute boundary (simulating a reconnect).
+        next_boundary = boundary + timedelta(minutes=5)
+        await engine.on_candle("XAUUSD", _candle(next_boundary))  # held pending
+        await engine.on_candle("XAUUSD", _candle(next_boundary + timedelta(minutes=1)))  # confirms it
+
+    asyncio.run(feed())
+
+    m1_state = engine.store.load("XAUUSD")
+    assert len(m1_state.candles) == 5  # 3 + confirmed resync pair
+    # The M5 aggregator's first (incomplete) bucket was discarded by the
+    # gap; the resync pair correctly starts a fresh bucket instead of being
+    # glued onto the abandoned one.
+    assert engine.m5_store.load("XAUUSD").candles == []

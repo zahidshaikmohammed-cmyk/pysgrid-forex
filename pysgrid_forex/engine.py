@@ -20,13 +20,15 @@ class Engine:
         self.settings = settings
         self.store = CandleStore(settings.data_dir, settings.max_candles)
         self.m5_store = CandleStore(settings.m5_data_dir, settings.m5_max_candles, period_seconds=M5_SECONDS)
+        # M5Engine no longer receives raw provider data directly -- it
+        # consumes only the validated M1 candles this class itself accepts
+        # into self.store (see _store_m1), aggregating five contiguous ones
+        # into each completed M5 bar. No second WebSocket connection is
+        # opened for it; it rides the same M1 stream this engine already
+        # validates.
         self.m5_engine = M5Engine(self.m5_store)
         self.stop_event = asyncio.Event()
-        # Every raw candle the provider delivers is fanned out to both
-        # acceptance paths below (_dispatch), over the SAME WebSocket
-        # connections -- no second connection is opened for M5, which
-        # matters given this account's limited concurrent-connection pool.
-        self.provider = RealMarketAPI(settings, self._dispatch, self.on_status)
+        self.provider = RealMarketAPI(settings, self.on_candle, self.on_status)
         self.started_at = datetime.now(timezone.utc)
         # A completed candle that does not yet continue the persisted series
         # (either because the store is empty, or because a gap was
@@ -46,13 +48,14 @@ class Engine:
             self.store.increment_reconnect(symbol)
             self.m5_store.increment_reconnect(symbol)
 
-    async def _dispatch(self, symbol: str, candle: Candle) -> None:
-        """Every raw candle the provider parses off the wire is handed to
-        both acceptance paths. Each independently decides, using its own
-        period's contiguity rules, whether to trust it -- this function
-        does no interpretation of its own."""
-        await self.on_candle(symbol, candle)
-        await self.m5_engine.on_candle(symbol, candle)
+    def _store_m1(self, symbol: str, candle: Candle, *, allow_gap: bool = False) -> None:
+        """The single choke point through which a candle actually becomes
+        part of the trusted M1 series. Every caller below that persists a
+        candle goes through here so the M1->M5 aggregator sees exactly the
+        same validated candles, in the same order, as candles_1m itself --
+        never the raw, unvetted provider stream."""
+        self.store.append_candle(symbol, candle, allow_gap=allow_gap)
+        self.m5_engine.on_m1_candle(symbol, candle)
 
     async def on_candle(self, symbol: str, candle: Candle) -> None:
         try:
@@ -86,11 +89,11 @@ class Engine:
             if gap == 0:
                 # Same-minute re-delivery: an idempotent correction of the
                 # last stored bar, not a new one. The store handles this.
-                self.store.append_candle(symbol, candle)
+                self._store_m1(symbol, candle)
                 return
 
             if gap == M1_SECONDS:
-                self.store.append_candle(symbol, candle)
+                self._store_m1(symbol, candle)
                 return
 
             log.warning(
@@ -106,8 +109,8 @@ class Engine:
         gap = (parse_timestamp(candle.timestamp) - parse_timestamp(pending.timestamp)).total_seconds()
 
         if gap == M1_SECONDS:
-            self.store.append_candle(symbol, pending, allow_gap=True)
-            self.store.append_candle(symbol, candle)
+            self._store_m1(symbol, pending, allow_gap=True)
+            self._store_m1(symbol, candle)
             if last is not None:
                 self.store.increment_recovery(symbol)
             self._pending.pop(symbol, None)

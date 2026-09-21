@@ -57,9 +57,8 @@ async def health() -> dict:
         # configured symbol -- not just one -- has a validated M1 feed.
         "m1_status": m1_status,
         "all_m1_live": bool(settings.symbols) and m1_live == len(settings.symbols),
-        # Native M5 feed (see README's Data-integrity rules): the provider's
-        # actual confirmed resolution, accepted honestly as M5, not
-        # relabeled as M1. Purely additive -- nothing above changes.
+        # M5 feed, built by aggregating five genuine, validated M1 candles
+        # per bar (see m5_engine.py). Purely additive -- nothing above changes.
         "m5_live_symbols": m5_live,
         "m5_status": m5_status,
         "all_m5_live": bool(settings.symbols) and m5_live == len(settings.symbols),
@@ -184,10 +183,8 @@ async def forex() -> JSONResponse:
 
 @app.get("/public/m5-live.json")
 async def m5_live() -> JSONResponse:
-    """Native M5 feed -- see README's Data-integrity rules for why this
-    exists: RealMarketAPI's WebSockets deliver genuine 5-minute candles,
-    confirmed against live data, and this exposes that honestly as M5
-    rather than continuing to reject it as invalid M1.
+    """M5 feed built by aggregating five genuine, validated M1 candles per
+    bar (see m5_engine.py's module docstring for the full architecture).
 
     Registered ABOVE /public/{symbol}.json: that route is a single-segment
     catch-all, so if this were declared after it, a request for this exact

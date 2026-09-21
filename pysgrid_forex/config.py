@@ -25,12 +25,10 @@ class Settings:
     max_candles: int = 1500
     stale_seconds: int = 120
 
-    # M5 pipeline: RealMarketAPI's WebSockets were confirmed to deliver
-    # genuine native 5-minute candles (see README's Data-integrity rules).
-    # This reuses the exact same WebSocket connections as the M1 pipeline
-    # (no new connections opened -- the account's concurrent-connection
-    # limit is already fully used by the M1 pipeline's one-per-symbol
-    # connections). 24h of 5-minute candles is 288; default keeps a margin.
+    # M5 pipeline: built by aggregating five genuine M1 candles into each
+    # bar (see m5_engine.py). No second WebSocket connection is opened --
+    # it consumes the same validated M1 stream the M1 pipeline already
+    # produces. 24h of 5-minute candles is 288; default keeps a margin.
     m5_data_dir: str = "./data-m5"
     m5_max_candles: int = 300
     m5_stale_seconds: int = 600

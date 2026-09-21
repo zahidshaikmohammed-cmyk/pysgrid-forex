@@ -35,7 +35,7 @@ PYSGRID_SYMBOLS=XAUUSD,EURUSD,GBPUSD,USDJPY,GBPJPY,AUDUSD,USDCAD,NZDUSD,XAGUSD,U
 PYSGRID_PORT=8080
 ```
 
-Optional M5 pipeline overrides (defaults shown; see README's "Native M5 pipeline" section):
+Optional M5 pipeline overrides (defaults shown; see README's "M1 -> M5 aggregation pipeline" section):
 
 ```text
 PYSGRID_M5_DATA_DIR=./data-m5
@@ -73,15 +73,16 @@ The first deployment can run without a RealMarketAPI key. The service will repor
 than crash. After purchasing Plus, add the key to the Oracle environment and restart the service.
 
 Once a key is configured, every deploy runs `tools/verify_m1_provider.py` directly against the live
-WebSocket (independent of the application code) and reports -- as a GitHub Actions warning annotation, not
-a failed job -- whether it observed a genuine 60-second candle cadence for every configured symbol. This is
-deliberately NOT a hard deploy gate: as of 2026-09-21, RealMarketAPI's `/candles` WebSocket has been
-confirmed (against a real, open-market feed) to deliver 5-minute-spaced bars despite `timeFrame=M1`, which
-is a provider/plan issue, not something a deploy of this code can fix -- and a provider problem must never
-block shipping a safety fix. Check the deploy log's warnings (or `/health`'s `all_m1_live`) after every
-deploy regardless of whether the job went green. A deploy started while forex markets are closed (weekend)
-will also show no live candles for the same underlying reason (no data exists to observe yet) -- that part
-is expected, not a bug.
+WebSocket (independent of the application code) and reports -- as a GitHub Actions annotation, not a failed
+job -- whether it observed a genuine 60-second candle cadence for every configured symbol. This stays
+deliberately NOT a hard deploy gate: RealMarketAPI's `/candles` WebSocket briefly delivered 5-minute-spaced
+bars despite `timeFrame=M1` (confirmed against a real, open-market feed, mid-September 2026 through
+2026-09-21) before RealMarketAPI's support team confirmed the defect was on their side and fixed it. A
+provider-side regression -- now or in the future -- must never block shipping a safety fix, which is why
+this check remains informational rather than blocking. Check the deploy log's annotations (or `/health`'s
+`all_m1_live`) after every deploy regardless of whether the job went green. A deploy started while forex
+markets are closed (weekend) will also show no live candles for the same underlying reason (no data exists
+to observe yet) -- that part is expected, not a bug.
 
 **Also expect this probe step to usually show `::notice::...inconclusive (WebSocket connection-limit
 contention...)` rather than a clean pass or fail.** RealMarketAPI plans cap concurrent WebSocket connections

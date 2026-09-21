@@ -29,29 +29,29 @@ The list is configurable through `PYSGRID_SYMBOLS`.
 ## Data-integrity rules
 
 - `candles_1m` contains completed candles only.
-- The provider's `/candles` WebSocket (`timeFrame=M1`) is the live OHLCV source. **Confirmed against a real,
-  open-market feed on 2026-09-21: this endpoint delivers exactly 300-second-spaced bars, not 60-second
-  ones, despite `timeFrame=M1`** -- the same mislabeling already known on the REST `/candle` endpoint (see
-  below) is present on the WebSocket too. `m1_valid` correctly reports `false` for this; no client-side code
-  can produce genuine M1 bars a provider never sends. This needs resolving with RealMarketAPI directly
-  (confirm plan/entitlement, or find a true M1 or raw-tick endpoint) before this feed can be trusted for
-  anything that assumes 1-minute resolution. `tools/verify_m1_provider.py` is available to re-check this
-  once that's addressed. The deploy pipeline runs it automatically on every deploy and reports the result
-  loudly (a GitHub Actions warning annotation), but does NOT fail the deploy on it -- a provider-side
-  problem must never block shipping a safety fix that makes this exact failure mode visible instead of
-  silently accepted, which is what would happen if this were a hard gate.
-- **Separately discovered while deploying this fix**: RealMarketAPI plans cap the number of concurrent
-  WebSocket connections per API key. The live pysgrid-forex service holds one connection per configured
-  symbol continuously, so `tools/verify_m1_provider.py`, run with the SAME key while the service is up,
-  competes for that same limited pool and gets rejected with `ERR_0018_WEBSOCKET_CONCURRENT_LIMIT_EXCEEDED`.
-  That is a connection-limit collision, not evidence about cadence, and the tool reports it as `BLOCKED`
-  (exit code 2), distinct from a confirmed `FAIL` (exit code 1) -- the two must never be read as the same
-  thing. Get a conclusive probe result either with a second API key, or by stopping the service first.
+- **History**: from roughly mid-September 2026 through 2026-09-21, RealMarketAPI's `/candles` WebSocket and
+  REST `/candle` endpoint both delivered candles spaced exactly 300 seconds apart despite `timeFrame=M1`
+  (confirmed against live, open-market data). `m1_valid` correctly reported `false` throughout that period --
+  no client-side code can produce genuine M1 bars a provider isn't sending. RealMarketAPI's support team
+  confirmed on 2026-09-21 that this was a defect on their side and has been fixed ("XAUUSD M1 is now working
+  correctly on both REST and WebSocket. No changes are needed on your side."). The Oracle's WebSocket
+  subscription was never changed during that period and still requests `timeFrame=M1` today -- it now
+  receives a genuine 1-minute cadence again. `tools/verify_m1_provider.py` remains available to independently
+  re-verify this on the wire at any time, and the deploy pipeline still runs it automatically on every deploy,
+  reporting the result loudly (a GitHub Actions annotation) without ever failing the deploy on it -- a
+  provider-side regression must never block shipping a safety fix, which is why this stays informational
+  rather than a hard gate.
+- RealMarketAPI plans cap the number of concurrent WebSocket connections per API key. The live pysgrid-forex
+  service holds one connection per configured symbol continuously, so `tools/verify_m1_provider.py`, run with
+  the SAME key while the service is up, competes for that same limited pool and gets rejected with
+  `ERR_0018_WEBSOCKET_CONCURRENT_LIMIT_EXCEEDED`. That is a connection-limit collision, not evidence about
+  cadence, and the tool reports it as `BLOCKED` (exit code 2), distinct from a confirmed `FAIL` (exit code 1).
+  Get a conclusive probe result either with a second API key, or by stopping the service first.
 - REST `/candle` data is accepted only when a returned multi-bar series has exact 60-second spacing.
 - Observed non-M1 REST data is rejected instead of being relabeled as M1.
-- REST recovery is disabled because the observed `/candle?timeFrame=M1` response was 5-minute spaced -- a
-  concrete, previously-observed instance of this provider mislabeling non-M1 data as M1, which is why
-  `timeFrame=M1` on any endpoint (REST or WebSocket) is never treated as sufficient proof of resolution.
+- `RealMarketAPI.recover()` (REST catch-up) is implemented but not wired into the running `Engine` -- it was
+  left disabled during the mislabeling period above and has not been re-enabled now that RealMarketAPI has
+  confirmed the fix; re-enabling it is out of scope for the M1->M5 aggregation fix below.
 - Every candle that reaches `candles_1m` is verified, at write time, to be either the first candle in an
   empty series or exactly 60 seconds after the immediately preceding stored candle
   (`CandleStore.append_candle`). A candle that doesn't satisfy this is never silently stored: it is held
@@ -69,26 +69,33 @@ The list is configurable through `PYSGRID_SYMBOLS`.
   file (e.g. from a pre-v4 schema version, before write-time contiguity enforcement existed) is discarded, and
   only once, on first load.
 
-## Native M5 pipeline
+## M1 -> M5 aggregation pipeline
 
-Since RealMarketAPI's WebSockets deliver a genuine, confirmed 300-second cadence under `timeFrame=M1` (see
-above), that data is honestly exposed as what it actually is -- M5 -- rather than only rejected as invalid
-M1:
+With RealMarketAPI's M1 feed confirmed genuine again, the M5 feed is built by aggregating real M1 candles --
+never by treating raw provider data as already-M5 (that was a temporary, honestly-labeled workaround during
+the mislabeling period above, and has been replaced now that the underlying defect is fixed):
 
-- The M1 pipeline is completely unchanged: `candles_1m`, `m1_valid`, and every M1 endpoint behave exactly as
-  before. The M5 pipeline is purely additive, running alongside it.
-- No second WebSocket connection is opened. `Engine._dispatch()` feeds the exact same raw candle stream, from
-  the same one-connection-per-symbol pool already used by M1, to both the M1 acceptance path and the M5 one
-  (`M5Engine`). This matters because RealMarketAPI plans cap concurrent connections per key, and that pool is
-  already fully used by the M1 pipeline.
-- `M5Engine` applies the identical discipline as the M1 engine, at a 300-second period instead of 60: a
-  candle is only ever persisted once a *following* candle confirms it sits on an exact 300-second cadence;
-  gaps are held as unconfirmed anchors, never fabricated; `CandleStore`'s write-time contiguity check enforces
-  this at the persistence layer too (`period_seconds=300`, `candles_5m` key).
+- The M1 pipeline is unchanged: `candles_1m`, `m1_valid`, and every M1 endpoint behave exactly as before. The
+  Oracle's WebSocket subscription still requests `timeFrame=M1` -- it is never changed to M5.
+- No second WebSocket connection is opened for M5. `Engine._store_m1()` is the single choke point through
+  which a candle actually becomes part of the trusted M1 series (`candles_1m`); every candle that passes
+  through it is also forwarded, in the same order, to `M5Engine.on_m1_candle()` -- the M1->M5 aggregator.
+  M5Engine never sees the raw, unvalidated provider stream.
+- `M5Engine` buckets five contiguous, 5-minute-aligned M1 candles into one completed M5 OHLCV bar:
+  `open`=first M1 open, `high`=max of the five M1 highs, `low`=min of the five M1 lows, `close`=last M1
+  close, `volume`=sum of the five M1 volumes.
+- A bucket only ever becomes an M5 candle once all five of its M1 candles have arrived, contiguously, in
+  order. A missing, duplicate, out-of-order, or delayed M1 candle discards the in-progress bucket outright --
+  nothing is ever fabricated, forward-filled, interpolated, or duplicated to complete it. A same-timestamp
+  redelivery of the most recently accepted M1 slot updates it in place (mirroring `CandleStore`'s own
+  idempotent-correction handling) rather than being treated as a break.
+- `CandleStore`'s write-time contiguity check still enforces the M5 store's own 300-second-spacing invariant
+  at the persistence layer (`period_seconds=300`, `candles_5m` key) -- the aggregator and the store are two
+  independent layers of the same guarantee, exactly as M1 already does.
 - `m5_max_candles` (default 300) retains roughly 24 hours of history (288 five-minute candles/day) with a
   margin.
 - `m5_valid`/`M5Engine.is_valid` requires a fresh (`m5_stale_seconds`, default 600s), uninterrupted
-  300-second-spaced tail, exactly mirroring `is_valid_m1`'s rigor.
+  300-second-spaced tail, exactly mirroring `is_valid_m1`'s rigor -- unchanged by this rewrite.
 
 ## Local test
 
