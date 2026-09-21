@@ -181,6 +181,37 @@ async def forex() -> JSONResponse:
     })
 
 
+@app.get("/public/m1-live.json")
+async def m1_live() -> JSONResponse:
+    """Explicit, provider-native M1 feed -- the same trusted engine.store
+    path /public/live.json already exposes, under a name that mirrors
+    /public/m5-live.json for symmetry. Adds candle_source/synthetic_candles
+    so a consumer can tell, from the schema alone, that these candles are
+    exactly what RealMarketAPI sent (never derived from M5, never
+    fabricated) -- no new acquisition path, no second WebSocket connection,
+    no change to M1 validation or the M1->M5 aggregator.
+
+    Registered ABOVE /public/{symbol}.json for the same reason as
+    m5_live() below: that route is a single-segment catch-all and would
+    otherwise swallow this exact path first."""
+    states = engine.states()
+    return JSONResponse({
+        "schema_version": "1.0",
+        "service": "pysgrid-forex",
+        "provider": "realmarketapi",
+        "timeframe": settings.timeframe,
+        "candle_source": "provider_native",
+        "synthetic_candles": False,
+        "generated_at": _stamp(),
+        "status": "ok" if any(s.status == "ok" for s in states.values()) else "degraded",
+        "universe_size": len(settings.symbols),
+        "symbols": {
+            symbol: state.to_dict(valid=engine.is_valid_m1(state))
+            for symbol, state in states.items()
+        },
+    })
+
+
 @app.get("/public/m5-live.json")
 async def m5_live() -> JSONResponse:
     """M5 feed built by aggregating five genuine, validated M1 candles per

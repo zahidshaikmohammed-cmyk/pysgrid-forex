@@ -225,3 +225,149 @@ def test_m1_and_m5_pipelines_are_independent_in_the_api(tmp_path, monkeypatch):
     health = asyncio.run(api.health())
     assert health["m1_status"] == {"XAUUSD": False}
     assert health["m5_status"] == {"XAUUSD": True}
+
+
+def test_m1_live_returns_200_with_m1_timeframe_and_provider_native_marker(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.store.append_candle("XAUUSD", _candle(now - timedelta(minutes=1)))
+    engine.store.append_candle("XAUUSD", _candle(now))
+
+    client = TestClient(api.app)
+    response = client.get("/public/m1-live.json")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["timeframe"] == "M1"
+    assert body["candle_source"] == "provider_native"
+    assert body["synthetic_candles"] is False
+
+
+def test_m1_live_includes_every_configured_instrument(tmp_path, monkeypatch):
+    symbols = ("XAUUSD", "EURUSD", "GBPUSD")
+    engine = _wire_engine(monkeypatch, tmp_path, symbols)
+    now = _now()
+    engine.store.append_candle("XAUUSD", _candle(now - timedelta(minutes=1)))
+    engine.store.append_candle("XAUUSD", _candle(now))
+
+    client = TestClient(api.app)
+    body = client.get("/public/m1-live.json").json()
+
+    assert set(body["symbols"].keys()) == set(symbols)
+    assert body["universe_size"] == 3
+    # EURUSD/GBPUSD have no data yet -- present, but correctly not valid.
+    assert body["symbols"]["EURUSD"]["m1_valid"] is False
+    assert body["symbols"]["EURUSD"]["candles_1m"] == []
+
+
+def test_m1_live_preserves_ohlcv_values_exactly_from_the_provider(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    c0 = Candle(timestamp=(now - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+                open=1900.11, high=1901.22, low=1899.33, close=1900.44, volume=123.5)
+    c1 = Candle(timestamp=now.isoformat().replace("+00:00", "Z"),
+                open=1900.44, high=1902.0, low=1900.0, close=1901.5, volume=456.75)
+    engine.store.append_candle("XAUUSD", c0)
+    engine.store.append_candle("XAUUSD", c1)
+
+    client = TestClient(api.app)
+    candles = client.get("/public/m1-live.json").json()["symbols"]["XAUUSD"]["candles_1m"]
+
+    assert candles == [c0.as_dict(), c1.as_dict()]
+
+
+def test_m1_live_never_exposes_m5_candles_as_m1(tmp_path, monkeypatch):
+    """No M5 candle may ever be converted into, or leak as, an M1 candle --
+    /public/m1-live.json must only ever reflect engine.store, never
+    engine.m5_store, regardless of what the M5 pipeline has accumulated."""
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.m5_store.append_candle("XAUUSD", _candle(now - timedelta(minutes=5)))
+    engine.m5_store.append_candle("XAUUSD", _candle(now))
+    # M1 store deliberately left empty.
+
+    client = TestClient(api.app)
+    body = client.get("/public/m1-live.json").json()
+
+    assert body["symbols"]["XAUUSD"]["candles_1m"] == []
+    assert body["symbols"]["XAUUSD"]["m1_valid"] is False
+
+
+def test_m1_live_does_not_fabricate_missing_candles_across_a_gap(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    base = _now() - timedelta(minutes=10)
+    engine.store.append_candle("XAUUSD", _candle(base))
+    engine.store.append_candle("XAUUSD", _candle(base + timedelta(minutes=1)))  # normal 60s continuation
+    # Minutes 2, 3, and 4 are never received -- a genuine gap follows,
+    # appended with allow_gap exactly as the engine's own confirmed-resync
+    # path would do. No candle is fabricated for the missing minutes.
+    engine.store.append_candle("XAUUSD", _candle(base + timedelta(minutes=5)), allow_gap=True)
+
+    client = TestClient(api.app)
+    candles = client.get("/public/m1-live.json").json()["symbols"]["XAUUSD"]["candles_1m"]
+
+    assert len(candles) == 3  # exactly the three real candles -- nothing fabricated in between
+    timestamps = [c["timestamp"] for c in candles]
+    assert timestamps == [
+        base.isoformat().replace("+00:00", "Z"),
+        (base + timedelta(minutes=1)).isoformat().replace("+00:00", "Z"),
+        (base + timedelta(minutes=5)).isoformat().replace("+00:00", "Z"),
+    ]
+
+
+def test_m1_live_duplicate_and_out_of_order_candles_follow_existing_store_rules(tmp_path, monkeypatch):
+    """The endpoint must reflect exactly what CandleStore.append_candle
+    already enforces -- a duplicate timestamp corrects in place, and an
+    out-of-order candle is rejected by the store, not silently accepted."""
+    from pysgrid_forex.store import NonSequentialCandleError
+
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.store.append_candle("XAUUSD", _candle(now - timedelta(minutes=1), close=100.0))
+    engine.store.append_candle("XAUUSD", _candle(now, close=101.0))
+
+    # Duplicate of the last stored candle, with a revised close: idempotent correction.
+    engine.store.append_candle("XAUUSD", _candle(now, close=999.0))
+
+    # Out-of-order (backwards) candle: must raise, never silently stored.
+    import pytest
+    with pytest.raises(NonSequentialCandleError):
+        engine.store.append_candle("XAUUSD", _candle(now - timedelta(minutes=1), close=-1.0))
+
+    client = TestClient(api.app)
+    candles = client.get("/public/m1-live.json").json()["symbols"]["XAUUSD"]["candles_1m"]
+
+    assert len(candles) == 2
+    assert candles[-1]["close"] == 999.0  # correction applied
+    assert candles[0]["close"] == 100.0  # unaffected by the rejected out-of-order attempt
+
+
+def test_m1_live_is_compatible_with_the_existing_live_json_storage_path(tmp_path, monkeypatch):
+    """/public/m1-live.json and /public/live.json must expose identical
+    candle data for the same symbol -- both read engine.store, the same
+    trusted M1 buffer, through the same to_dict() convention."""
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.store.append_candle("XAUUSD", _candle(now - timedelta(minutes=1)))
+    engine.store.append_candle("XAUUSD", _candle(now))
+
+    client = TestClient(api.app)
+    live_body = client.get("/public/live.json").json()
+    m1_live_body = client.get("/public/m1-live.json").json()
+
+    assert live_body["symbols"]["XAUUSD"] == m1_live_body["symbols"]["XAUUSD"]
+
+
+def test_m1_live_route_is_reachable_and_not_swallowed_by_the_symbol_catch_all(tmp_path, monkeypatch):
+    """Same route-ordering hazard as m5-live.json: /public/{symbol}.json is
+    a single-segment catch-all and must not intercept this exact path."""
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.store.append_candle("XAUUSD", _candle(now - timedelta(minutes=1)))
+    engine.store.append_candle("XAUUSD", _candle(now))
+
+    client = TestClient(api.app)
+    response = client.get("/public/m1-live.json")
+
+    assert response.status_code == 200
+    assert "detail" not in response.json()

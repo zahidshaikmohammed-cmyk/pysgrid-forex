@@ -137,9 +137,15 @@ and -- importantly -- what it can't actually do yet.
 - `GET /public/live.json`
 - `GET /public/forex.json`
 - `GET /public/{symbol}.json`
+- `GET /public/m1-live.json`
 - `GET /metrics`
 
 The JSON contains only completed M1 candles. Provider timestamps are normalized to UTC ISO-8601 strings.
+
+`/public/m1-live.json` is the same trusted `engine.store` data as `/public/live.json`, under a name that
+mirrors `/public/m5-live.json` for symmetry, plus two explicit provenance fields: `candle_source:
+"provider_native"` and `synthetic_candles: false` -- so a consumer can tell from the schema alone that these
+are exactly the candles RealMarketAPI sent, never derived from M5 or fabricated.
 
 ### Native M5 endpoints
 
