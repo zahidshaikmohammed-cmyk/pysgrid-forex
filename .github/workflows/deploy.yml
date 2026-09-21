@@ -109,8 +109,8 @@ jobs:
               fi
 
               # M5 pipeline: same raw candles, no second WebSocket connection
-              # (see README's "Native M5 pipeline"). Informational only, same
-              # reasoning as the M1 check above.
+              # (see the README "Native M5 pipeline" section). Informational
+              # only, same reasoning as the M1 check above.
               m5_ok=false
               echo "Checking whether every configured symbol currently has a validated M5 feed (informational, not a deploy gate)..."
               for attempt in $(seq 1 30); do
