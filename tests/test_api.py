@@ -2,6 +2,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from pysgrid_forex import api
 from pysgrid_forex.config import Settings
 from pysgrid_forex.engine import Engine
@@ -173,6 +175,42 @@ def test_symbol_m5_payload_exposes_m5_valid_and_candles(tmp_path, monkeypatch):
     assert payload["timeframe"] == "M5"
     assert payload["m5_valid"] is True
     assert len(payload["candles_5m"]) == 2
+
+
+def test_m5_live_and_m5_forex_routes_are_reachable_over_real_http(tmp_path, monkeypatch):
+    """Regression test for a real production bug: /public/{symbol}.json is a
+    single-segment catch-all, so if the m5-live.json/m5-forex.json routes
+    were declared AFTER it, FastAPI/Starlette (which matches routes in
+    registration order) would swallow requests for them as symbol="m5-live"
+    / "m5-forex" and return 404 "symbol not configured" -- exactly what
+    happened when this shipped. Calling the handler functions directly (as
+    the other tests in this file do) can never catch this class of bug,
+    since it never goes through actual URL routing -- only a real HTTP
+    request against the app does."""
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.m5_store.append_candle("XAUUSD", _candle(now - timedelta(minutes=5)))
+    engine.m5_store.append_candle("XAUUSD", _candle(now))
+
+    client = TestClient(api.app)
+
+    live_response = client.get("/public/m5-live.json")
+    assert live_response.status_code == 200
+    assert live_response.json()["timeframe"] == "M5"
+    assert live_response.json()["symbols"]["XAUUSD"]["m5_valid"] is True
+
+    forex_response = client.get("/public/m5-forex.json")
+    assert forex_response.status_code == 200
+    assert forex_response.json()["timeframe"] == "M5"
+
+    symbol_response = client.get("/public/m5/XAUUSD.json")
+    assert symbol_response.status_code == 200
+    assert symbol_response.json()["m5_valid"] is True
+
+    # The M1 catch-all route must still resolve real symbols correctly too.
+    m1_symbol_response = client.get("/public/XAUUSD.json")
+    assert m1_symbol_response.status_code == 200
+    assert m1_symbol_response.json()["symbol"] == "XAUUSD"
 
 
 def test_m1_and_m5_pipelines_are_independent_in_the_api(tmp_path, monkeypatch):

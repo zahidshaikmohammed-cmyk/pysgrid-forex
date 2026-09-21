@@ -182,17 +182,18 @@ async def forex() -> JSONResponse:
     })
 
 
-@app.get("/public/{symbol}.json")
-async def symbol(symbol: str) -> JSONResponse:
-    return JSONResponse(_symbol_payload(symbol))
-
-
 @app.get("/public/m5-live.json")
 async def m5_live() -> JSONResponse:
     """Native M5 feed -- see README's Data-integrity rules for why this
     exists: RealMarketAPI's WebSockets deliver genuine 5-minute candles,
     confirmed against live data, and this exposes that honestly as M5
-    rather than continuing to reject it as invalid M1."""
+    rather than continuing to reject it as invalid M1.
+
+    Registered ABOVE /public/{symbol}.json: that route is a single-segment
+    catch-all, so if this were declared after it, a request for this exact
+    path would be swallowed by the catch-all first (symbol="m5-live") and
+    never reach this handler -- FastAPI/Starlette matches routes in
+    registration order, not by specificity."""
     states = engine.m5_states()
     return JSONResponse({
         "schema_version": "1.0",
@@ -213,6 +214,8 @@ async def m5_live() -> JSONResponse:
 
 @app.get("/public/m5-forex.json")
 async def m5_forex() -> JSONResponse:
+    """See m5_live()'s docstring for why this must stay registered above
+    /public/{symbol}.json."""
     states = engine.m5_states()
     symbols = {
         s: states[s].to_dict(
@@ -231,6 +234,11 @@ async def m5_forex() -> JSONResponse:
         "universe_size": len(symbols),
         "symbols": symbols,
     })
+
+
+@app.get("/public/{symbol}.json")
+async def symbol(symbol: str) -> JSONResponse:
+    return JSONResponse(_symbol_payload(symbol))
 
 
 @app.get("/public/m5/{symbol}.json")
