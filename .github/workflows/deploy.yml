@@ -109,12 +109,11 @@ jobs:
               fi
 
               echo "Independently checking provider cadence on the wire (informational, not a deploy gate)..."
-              cd /opt/pysgrid-forex
-              set -a
-              . /etc/pysgrid-forex/pysgrid-forex.env
-              set +a
-              symbols="${PYSGRID_SYMBOLS:-XAUUSD,EURUSD,GBPUSD,USDJPY,GBPJPY,AUDUSD,USDCAD,NZDUSD,XAGUSD,USOIL}"
-              if .venv/bin/python tools/verify_m1_provider.py --symbols "$symbols" --timeout 90; then
+              # /etc/pysgrid-forex/pysgrid-forex.env is root:root 600 (see
+              # deploy/install.sh), so the ubuntu user cannot source it
+              # directly -- sudo -n (passwordless) is required to read it,
+              # same fix as an earlier probe needed (see git history).
+              if sudo -n bash -c '"'"'cd /opt/pysgrid-forex && set -a && . /etc/pysgrid-forex/pysgrid-forex.env && set +a && exec .venv/bin/python tools/verify_m1_provider.py --symbols "${PYSGRID_SYMBOLS:-XAUUSD,EURUSD,GBPUSD,USDJPY,GBPJPY,AUDUSD,USDCAD,NZDUSD,XAGUSD,USOIL}" --timeout 90'"'"'; then
                 echo "Provider probe confirmed a genuine 60s M1 cadence for every symbol."
               else
                 echo "::warning::Provider probe did not confirm a genuine 60s M1 cadence for every symbol -- see output above. This does not block the deploy."
