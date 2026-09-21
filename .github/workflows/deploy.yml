@@ -113,10 +113,27 @@ jobs:
               # deploy/install.sh), so the ubuntu user cannot source it
               # directly -- sudo -n (passwordless) is required to read it,
               # same fix as an earlier probe needed (see git history).
+              #
+              # Known limitation: RealMarketAPI plans cap concurrent
+              # WebSocket connections per key. The live service (already
+              # running, one connection per symbol) and this probe (opening
+              # its own set with the SAME key) compete for that same pool,
+              # so this probe is expected to come back BLOCKED (exit 2)
+              # whenever the service is already up -- that is a connection
+              # -limit collision, not a cadence failure, and
+              # verify_m1_provider.py distinguishes the two explicitly.
               if sudo -n bash -c '"'"'cd /opt/pysgrid-forex && set -a && . /etc/pysgrid-forex/pysgrid-forex.env && set +a && exec .venv/bin/python tools/verify_m1_provider.py --symbols "${PYSGRID_SYMBOLS:-XAUUSD,EURUSD,GBPUSD,USDJPY,GBPJPY,AUDUSD,USDCAD,NZDUSD,XAGUSD,USOIL}" --timeout 90'"'"'; then
-                echo "Provider probe confirmed a genuine 60s M1 cadence for every symbol."
+                probe_exit=0
               else
-                echo "::warning::Provider probe did not confirm a genuine 60s M1 cadence for every symbol -- see output above. This does not block the deploy."
+                probe_exit=$?
+              fi
+
+              if [ "$probe_exit" -eq 0 ]; then
+                echo "Provider probe confirmed a genuine 60s M1 cadence for every symbol."
+              elif [ "$probe_exit" -eq 2 ]; then
+                echo "::notice::Provider probe was inconclusive (WebSocket connection-limit contention with the live service, most likely) -- see output above. Not a cadence failure; expected while the service is already running under a limited-connection plan."
+              else
+                echo "::warning::Provider probe confirmed a non-60s cadence for at least one symbol -- see output above. This does not block the deploy."
               fi
 
               echo "=== DEPLOY SUMMARY ==="

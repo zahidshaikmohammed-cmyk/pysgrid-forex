@@ -40,6 +40,13 @@ The list is configurable through `PYSGRID_SYMBOLS`.
   loudly (a GitHub Actions warning annotation), but does NOT fail the deploy on it -- a provider-side
   problem must never block shipping a safety fix that makes this exact failure mode visible instead of
   silently accepted, which is what would happen if this were a hard gate.
+- **Separately discovered while deploying this fix**: RealMarketAPI plans cap the number of concurrent
+  WebSocket connections per API key. The live pysgrid-forex service holds one connection per configured
+  symbol continuously, so `tools/verify_m1_provider.py`, run with the SAME key while the service is up,
+  competes for that same limited pool and gets rejected with `ERR_0018_WEBSOCKET_CONCURRENT_LIMIT_EXCEEDED`.
+  That is a connection-limit collision, not evidence about cadence, and the tool reports it as `BLOCKED`
+  (exit code 2), distinct from a confirmed `FAIL` (exit code 1) -- the two must never be read as the same
+  thing. Get a conclusive probe result either with a second API key, or by stopping the service first.
 - REST `/candle` data is accepted only when a returned multi-bar series has exact 60-second spacing.
 - Observed non-M1 REST data is rejected instead of being relabeled as M1.
 - REST recovery is disabled because the observed `/candle?timeFrame=M1` response was 5-minute spaced -- a

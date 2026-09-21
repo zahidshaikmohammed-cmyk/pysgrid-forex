@@ -71,3 +71,11 @@ block shipping a safety fix. Check the deploy log's warnings (or `/health`'s `al
 deploy regardless of whether the job went green. A deploy started while forex markets are closed (weekend)
 will also show no live candles for the same underlying reason (no data exists to observe yet) -- that part
 is expected, not a bug.
+
+**Also expect this probe step to usually show `::notice::...inconclusive (WebSocket connection-limit
+contention...)` rather than a clean pass or fail.** RealMarketAPI plans cap concurrent WebSocket connections
+per key; the live service (already running, one connection per symbol) and the deploy-time probe (same key)
+compete for that same pool, so the probe getting BLOCKED is the normal case whenever the service is already
+up, not a new problem each time. A `::warning::...confirmed a non-60s cadence...` is the one that actually
+means something (a real, confirmed FAIL); a `::notice::...inconclusive...` does not confirm or deny
+anything about cadence.

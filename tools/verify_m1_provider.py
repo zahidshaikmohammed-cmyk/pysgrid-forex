@@ -19,7 +19,23 @@ reported as FAIL for that symbol.
 Passing `timeFrame=M1` in the query string is not evidence of anything;
 this script only trusts what it actually observes on the wire.
 
-Exit code is 0 only if every requested symbol PASSes.
+IMPORTANT -- discovered running this against production: RealMarketAPI
+plans have a LIMITED number of concurrent WebSocket connections per API
+key. If the live pysgrid-forex service is already running (holding one
+connection open per configured symbol) and you run this probe with the
+SAME key at the same time, every additional connection this probe opens
+competes for that same limited pool and gets rejected with
+ERR_0018_WEBSOCKET_CONCURRENT_LIMIT_EXCEEDED. That rejection means "no
+room to even test," not "the cadence is wrong" -- this script reports it
+as BLOCKED, distinct from FAIL, specifically so the two are never
+conflated. To get a real cadence answer while pysgrid-forex is running,
+either use a second API key, or stop the service first
+(`sudo systemctl stop pysgrid-forex`), run this, then restart it.
+
+Exit code: 0 if every symbol PASSes; 1 if any symbol definitively FAILs
+(confirmed non-60s cadence); 2 if nothing failed but at least one symbol
+was BLOCKED (inconclusive -- re-run without the connection contention
+above before trusting a 0 or 1 from a run that had any BLOCKED symbols).
 """
 from __future__ import annotations
 
@@ -50,9 +66,14 @@ def _iter_updates(body: object) -> list[dict]:
     return []
 
 
+_CONCURRENCY_MARKERS = ("CONCURRENT_LIMIT", "ERR_0018")
+
+
 async def probe_symbol(
     ws_base: str, api_key: str, symbol: str, timeframe: str, timeout: float
-) -> tuple[str, bool, str]:
+) -> tuple[str, bool | None, str]:
+    """Returns (symbol, result, detail). result is True (PASS), False
+    (confirmed FAIL), or None (BLOCKED -- inconclusive, see module docstring)."""
     url = f"{ws_base}?" + urlencode({"apiKey": api_key, "symbolCode": symbol, "timeFrame": timeframe})
     open_times: list[datetime] = []
     last_open: datetime | None = None
@@ -88,7 +109,16 @@ async def probe_symbol(
                 if len(open_times) >= 3:
                     break
     except Exception as exc:  # noqa: BLE001 - report, don't crash the sweep
-        return symbol, False, f"connection error: {exc!r}"
+        text = repr(exc)
+        if any(marker in text for marker in _CONCURRENCY_MARKERS):
+            return symbol, None, (
+                "blocked: WebSocket connection limit exceeded for this API key. "
+                "This means no room to even test right now (most likely the live "
+                "pysgrid-forex service is already holding all connections your "
+                "plan allows) -- it does NOT mean the cadence is wrong. See the "
+                "module docstring for how to get a conclusive answer."
+            )
+        return symbol, False, f"connection error: {text}"
 
     if len(open_times) < 2:
         return symbol, False, f"only observed {len(open_times)} distinct OpenTime bucket(s) in {timeout:.0f}s"
@@ -122,15 +152,22 @@ async def main() -> int:
         *(probe_symbol(args.ws_base, api_key, s, args.timeframe, args.timeout) for s in symbols)
     )
 
-    ok = True
-    summary: dict[str, bool] = {}
-    for symbol, passed, detail in results:
-        summary[symbol] = passed
-        ok = ok and passed
-        print(f"{'PASS' if passed else 'FAIL'} {symbol}: {detail}")
+    summary: dict[str, str] = {}
+    any_failed = False
+    any_blocked = False
+    for symbol, result, detail in results:
+        label = "PASS" if result is True else "BLOCKED" if result is None else "FAIL"
+        summary[symbol] = label
+        any_failed = any_failed or result is False
+        any_blocked = any_blocked or result is None
+        print(f"{label} {symbol}: {detail}")
 
     print("VERIFY_M1_PROVIDER_SUMMARY:", json.dumps(summary))
-    return 0 if ok else 1
+    if any_failed:
+        return 1
+    if any_blocked:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
