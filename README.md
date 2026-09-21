@@ -29,11 +29,17 @@ The list is configurable through `PYSGRID_SYMBOLS`.
 ## Data-integrity rules
 
 - `candles_1m` contains completed candles only.
-- The provider's `/candles` WebSocket (`timeFrame=M1`) is the live OHLCV source. **This endpoint's true bar
-  resolution has not been independently confirmed with production credentials from within this repository's
-  environment** (no outbound network access to RealMarketAPI and no API key are available there). Run
-  `tools/verify_m1_provider.py` against a real key before trusting the feed; the deploy pipeline runs it
-  automatically on every deploy and fails closed if it doesn't observe a genuine 60-second cadence.
+- The provider's `/candles` WebSocket (`timeFrame=M1`) is the live OHLCV source. **Confirmed against a real,
+  open-market feed on 2026-09-21: this endpoint delivers exactly 300-second-spaced bars, not 60-second
+  ones, despite `timeFrame=M1`** -- the same mislabeling already known on the REST `/candle` endpoint (see
+  below) is present on the WebSocket too. `m1_valid` correctly reports `false` for this; no client-side code
+  can produce genuine M1 bars a provider never sends. This needs resolving with RealMarketAPI directly
+  (confirm plan/entitlement, or find a true M1 or raw-tick endpoint) before this feed can be trusted for
+  anything that assumes 1-minute resolution. `tools/verify_m1_provider.py` is available to re-check this
+  once that's addressed. The deploy pipeline runs it automatically on every deploy and reports the result
+  loudly (a GitHub Actions warning annotation), but does NOT fail the deploy on it -- a provider-side
+  problem must never block shipping a safety fix that makes this exact failure mode visible instead of
+  silently accepted, which is what would happen if this were a hard gate.
 - REST `/candle` data is accepted only when a returned multi-bar series has exact 60-second spacing.
 - Observed non-M1 REST data is rejected instead of being relabeled as M1.
 - REST recovery is disabled because the observed `/candle?timeFrame=M1` response was 5-minute spaced -- a

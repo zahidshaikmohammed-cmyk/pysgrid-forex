@@ -62,7 +62,12 @@ The first deployment can run without a RealMarketAPI key. The service will repor
 than crash. After purchasing Plus, add the key to the Oracle environment and restart the service.
 
 Once a key is configured, every deploy runs `tools/verify_m1_provider.py` directly against the live
-WebSocket (independent of the application code) and fails the deploy if it does not observe a genuine
-60-second candle cadence for every configured symbol. This also means a deploy started while forex markets
-are closed (weekend) can legitimately fail the gate simply because no live candles are being produced at
-all -- that is expected, not a bug in the gate.
+WebSocket (independent of the application code) and reports -- as a GitHub Actions warning annotation, not
+a failed job -- whether it observed a genuine 60-second candle cadence for every configured symbol. This is
+deliberately NOT a hard deploy gate: as of 2026-09-21, RealMarketAPI's `/candles` WebSocket has been
+confirmed (against a real, open-market feed) to deliver 5-minute-spaced bars despite `timeFrame=M1`, which
+is a provider/plan issue, not something a deploy of this code can fix -- and a provider problem must never
+block shipping a safety fix. Check the deploy log's warnings (or `/health`'s `all_m1_live`) after every
+deploy regardless of whether the job went green. A deploy started while forex markets are closed (weekend)
+will also show no live candles for the same underlying reason (no data exists to observe yet) -- that part
+is expected, not a bug.
