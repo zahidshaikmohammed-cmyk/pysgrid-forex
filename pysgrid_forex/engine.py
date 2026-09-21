@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from .config import Settings
+from .m5_engine import M5Engine, M5_SECONDS
 from .models import Candle, SymbolState, parse_timestamp
 from .provider import RealMarketAPI
 from .store import CandleStore
@@ -18,8 +19,14 @@ class Engine:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.store = CandleStore(settings.data_dir, settings.max_candles)
+        self.m5_store = CandleStore(settings.m5_data_dir, settings.m5_max_candles, period_seconds=M5_SECONDS)
+        self.m5_engine = M5Engine(self.m5_store)
         self.stop_event = asyncio.Event()
-        self.provider = RealMarketAPI(settings, self.on_candle, self.on_status)
+        # Every raw candle the provider delivers is fanned out to both
+        # acceptance paths below (_dispatch), over the SAME WebSocket
+        # connections -- no second connection is opened for M5, which
+        # matters given this account's limited concurrent-connection pool.
+        self.provider = RealMarketAPI(settings, self._dispatch, self.on_status)
         self.started_at = datetime.now(timezone.utc)
         # A completed candle that does not yet continue the persisted series
         # (either because the store is empty, or because a gap was
@@ -31,9 +38,21 @@ class Engine:
         self._pending: dict[str, Candle] = {}
 
     async def on_status(self, symbol: str, connected: bool) -> None:
+        # Same physical WebSocket connection feeds both pipelines, so its
+        # connect/disconnect status is mirrored to both stores.
         self.store.mark_socket(symbol, connected)
+        self.m5_store.mark_socket(symbol, connected)
         if not connected:
             self.store.increment_reconnect(symbol)
+            self.m5_store.increment_reconnect(symbol)
+
+    async def _dispatch(self, symbol: str, candle: Candle) -> None:
+        """Every raw candle the provider parses off the wire is handed to
+        both acceptance paths. Each independently decides, using its own
+        period's contiguity rules, whether to trust it -- this function
+        does no interpretation of its own."""
+        await self.on_candle(symbol, candle)
+        await self.m5_engine.on_candle(symbol, candle)
 
     async def on_candle(self, symbol: str, candle: Candle) -> None:
         try:
@@ -147,8 +166,8 @@ class Engine:
         except (ValueError, TypeError):
             return False
 
-    def states(self) -> dict[str, SymbolState]:
-        states = self.store.all_states(self.settings.symbols)
+    def _compute_states(self, store: CandleStore, stale_seconds: int) -> dict[str, SymbolState]:
+        states = store.all_states(self.settings.symbols)
         now = datetime.now(timezone.utc)
 
         for state in states.values():
@@ -163,7 +182,7 @@ class Engine:
                 except ValueError:
                     age = 10**9
 
-                if age > self.settings.stale_seconds:
+                if age > stale_seconds:
                     state.status = "stale"
                     state.market_state = (
                         "closed" if now.weekday() >= 5 else "stale"
@@ -173,9 +192,19 @@ class Engine:
 
         return states
 
+    def states(self) -> dict[str, SymbolState]:
+        return self._compute_states(self.store, self.settings.stale_seconds)
+
     def m1_status(self) -> dict[str, bool]:
         """Per-symbol M1 integrity, explicitly, for every configured symbol."""
         return {symbol: self.is_valid_m1(state) for symbol, state in self.states().items()}
+
+    def m5_states(self) -> dict[str, SymbolState]:
+        return self._compute_states(self.m5_store, self.settings.m5_stale_seconds)
+
+    def m5_status(self) -> dict[str, bool]:
+        """Per-symbol M5 integrity, explicitly, for every configured symbol."""
+        return {symbol: M5Engine.is_valid(state) for symbol, state in self.m5_states().items()}
 
     async def start(self) -> None:
         if not self.settings.api_key:

@@ -108,6 +108,27 @@ jobs:
                 curl --fail --silent --show-error http://127.0.0.1:8080/health | grep -o "\"m1_status\":{[^}]*}" || true
               fi
 
+              # M5 pipeline: same raw candles, no second WebSocket connection
+              # (see README's "Native M5 pipeline"). Informational only, same
+              # reasoning as the M1 check above.
+              m5_ok=false
+              echo "Checking whether every configured symbol currently has a validated M5 feed (informational, not a deploy gate)..."
+              for attempt in $(seq 1 30); do
+                health=$(curl --fail --silent --show-error http://127.0.0.1:8080/health)
+                all_m5_live=$(printf '%s' "$health" | grep -o "\"all_m5_live\":[a-z]*" | cut -d: -f2)
+                if [ "$all_m5_live" = "true" ]; then
+                  m5_ok=true
+                  echo "Every configured symbol has a validated live M5 feed on attempt $attempt."
+                  break
+                fi
+                sleep 2
+              done
+
+              if [ "$m5_ok" = "false" ]; then
+                echo "::notice::Not every configured symbol has a validated M5 feed after 60s -- see m5_status below. Not blocking."
+                curl --fail --silent --show-error http://127.0.0.1:8080/health | grep -o "\"m5_status\":{[^}]*}" || true
+              fi
+
               echo "Independently checking provider cadence on the wire (informational, not a deploy gate)..."
               # /etc/pysgrid-forex/pysgrid-forex.env is root:root 600 (see
               # deploy/install.sh), so the ubuntu user cannot source it
@@ -139,5 +160,6 @@ jobs:
               echo "=== DEPLOY SUMMARY ==="
               echo "Code deployed and service is up: YES"
               echo "All symbols currently validated M1: $m1_ok"
+              echo "All symbols currently validated M5: $m5_ok"
               echo "If M1 is not validated, this is a RealMarketAPI provider/plan issue, not a deploy failure -- see the warnings above."
             '

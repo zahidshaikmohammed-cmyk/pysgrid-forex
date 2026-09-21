@@ -20,7 +20,10 @@ def _now() -> datetime:
 
 
 def _wire_engine(monkeypatch, tmp_path: Path, symbols):
-    settings = Settings(api_key="", symbols=symbols, data_dir=str(tmp_path))
+    settings = Settings(
+        api_key="", symbols=symbols,
+        data_dir=str(tmp_path / "m1"), m5_data_dir=str(tmp_path / "m5"),
+    )
     engine = Engine(settings)
     monkeypatch.setattr(api, "engine", engine)
     monkeypatch.setattr(api, "settings", settings)
@@ -101,3 +104,86 @@ def test_health_all_m1_live_is_shell_gate_parseable(tmp_path, monkeypatch):
     match = re.search(r'"all_m1_live":([a-z]*)', body)
     assert match is not None
     assert match.group(1) == "true"
+
+
+def test_health_exposes_per_symbol_m5_status_and_all_m5_live(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD", "EURUSD"))
+    now = _now()
+    engine.m5_store.append_candle("XAUUSD", _candle(now - timedelta(minutes=5)))
+    engine.m5_store.append_candle("XAUUSD", _candle(now))
+    # EURUSD has no M5 data at all.
+
+    health = asyncio.run(api.health())
+
+    assert health["m5_status"] == {"XAUUSD": True, "EURUSD": False}
+    assert health["m5_live_symbols"] == 1
+    assert health["all_m5_live"] is False
+
+
+def test_metrics_exposes_symbols_m5_section(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.m5_store.append_candle("XAUUSD", _candle(now - timedelta(minutes=5)))
+    engine.m5_store.append_candle("XAUUSD", _candle(now))
+
+    metrics = asyncio.run(api.metrics())
+
+    assert metrics["symbols_m5"]["XAUUSD"]["m5_valid"] is True
+    assert metrics["symbols_m5"]["XAUUSD"]["candle_count"] == 2
+
+
+def test_bulk_m5_live_feed_exposes_m5_valid_per_symbol(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD", "EURUSD"))
+    now = _now()
+    engine.m5_store.append_candle("XAUUSD", _candle(now - timedelta(minutes=5)))
+    engine.m5_store.append_candle("XAUUSD", _candle(now))
+
+    response = asyncio.run(api.m5_live())
+    import json
+    payload = json.loads(response.body.decode())
+
+    assert payload["timeframe"] == "M5"
+    assert payload["symbols"]["XAUUSD"]["m5_valid"] is True
+    assert payload["symbols"]["XAUUSD"]["candles_5m"]
+    assert payload["symbols"]["EURUSD"]["m5_valid"] is False
+
+
+def test_m5_forex_excludes_metals_and_oil(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD", "EURUSD"))
+    now = _now()
+    for symbol in ("XAUUSD", "EURUSD"):
+        engine.m5_store.append_candle(symbol, _candle(now - timedelta(minutes=5)))
+        engine.m5_store.append_candle(symbol, _candle(now))
+
+    response = asyncio.run(api.m5_forex())
+    import json
+    payload = json.loads(response.body.decode())
+
+    assert "EURUSD" in payload["symbols"]
+    assert "XAUUSD" not in payload["symbols"]
+
+
+def test_symbol_m5_payload_exposes_m5_valid_and_candles(tmp_path, monkeypatch):
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.m5_store.append_candle("XAUUSD", _candle(now - timedelta(minutes=5)))
+    engine.m5_store.append_candle("XAUUSD", _candle(now))
+
+    payload = api._symbol_payload_m5("XAUUSD")
+    assert payload["timeframe"] == "M5"
+    assert payload["m5_valid"] is True
+    assert len(payload["candles_5m"]) == 2
+
+
+def test_m1_and_m5_pipelines_are_independent_in_the_api(tmp_path, monkeypatch):
+    """The M1 endpoints must keep reporting exactly what they did before --
+    M5 data landing in the parallel store must never leak into or influence
+    the M1 response."""
+    engine = _wire_engine(monkeypatch, tmp_path, ("XAUUSD",))
+    now = _now()
+    engine.m5_store.append_candle("XAUUSD", _candle(now - timedelta(minutes=5)))
+    engine.m5_store.append_candle("XAUUSD", _candle(now))
+
+    health = asyncio.run(api.health())
+    assert health["m1_status"] == {"XAUUSD": False}
+    assert health["m5_status"] == {"XAUUSD": True}

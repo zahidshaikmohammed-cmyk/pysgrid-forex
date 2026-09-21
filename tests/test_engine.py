@@ -8,7 +8,10 @@ from pysgrid_forex.models import Candle, parse_timestamp
 
 
 def _engine(tmp_path: Path, symbols=("XAUUSD",)) -> Engine:
-    settings = Settings(api_key="", symbols=symbols, data_dir=str(tmp_path))
+    settings = Settings(
+        api_key="", symbols=symbols,
+        data_dir=str(tmp_path / "m1"), m5_data_dir=str(tmp_path / "m5"),
+    )
     return Engine(settings)
 
 

@@ -23,24 +23,34 @@ M1_SECONDS = 60
 
 
 class NonSequentialCandleError(ValueError):
-    """Raised when a candle would corrupt the store's M1 contiguity guarantee."""
+    """Raised when a candle would corrupt the store's period-contiguity guarantee."""
 
 
 class CandleStore:
-    """Persists per-symbol OHLCV state.
+    """Persists per-symbol OHLCV state for a single, fixed candle period.
 
-    The store enforces, at the point of write, that ``candles_1m`` can never
-    contain two adjacent entries that are not exactly 60 seconds apart unless
-    the caller explicitly acknowledges a gap (``allow_gap=True``). This makes
-    "every stored candle is genuine M1" a property of the storage layer
-    itself, not something callers have to get right, and it holds regardless
-    of what the last two entries happen to look like.
+    The store enforces, at the point of write, that its stored series can
+    never contain two adjacent entries that are not exactly ``period_seconds``
+    apart unless the caller explicitly acknowledges a gap (``allow_gap=True``).
+    This makes "every stored candle is genuine <period>" a property of the
+    storage layer itself, not something callers have to get right, and it
+    holds regardless of what the last two entries happen to look like.
+
+    ``period_seconds`` defaults to 60 (M1) to preserve the exact existing
+    behavior for every caller that doesn't pass it explicitly. A second
+    instance with ``period_seconds=300`` is what the M5 pipeline uses --
+    same guarantees, same code, different period.
     """
 
-    def __init__(self, data_dir: str, max_candles: int = 500):
+    def __init__(self, data_dir: str, max_candles: int = 500, period_seconds: int = M1_SECONDS):
         self.root = Path(data_dir)
         self.root.mkdir(parents=True, exist_ok=True)
         self.max_candles = max_candles
+        self.period_seconds = period_seconds
+        # The on-disk/serialized key must reflect the actual period stored --
+        # writing M5 data under a "candles_1m" key would be exactly the kind
+        # of mislabeling this whole project exists to prevent.
+        self.candles_key = "candles_1m" if period_seconds == M1_SECONDS else f"candles_{period_seconds // 60}m"
         self._lock = RLock()
         self._states: dict[str, SymbolState] = {}
 
@@ -89,7 +99,7 @@ class CandleStore:
                     state.reconnect_count = int(raw.get("reconnect_count", 0))
                     state.gap_recoveries = int(raw.get("gap_recoveries", 0))
                     state.rejected_count = int(raw.get("rejected_count", 0))
-                    candles = [Candle(**x) for x in raw.get("candles_1m", [])]
+                    candles = [Candle(**x) for x in raw.get(self.candles_key, [])]
 
                     if not self._validate_monotonic(candles):
                         log.error(
@@ -112,18 +122,18 @@ class CandleStore:
         return {s: self.load(s) for s in symbols}
 
     def append_candle(self, symbol: str, candle: Candle, *, allow_gap: bool = False) -> bool:
-        """Append a completed candle, enforcing the M1 contiguity invariant.
+        """Append a completed candle, enforcing this store's period-contiguity invariant.
 
         - An empty store accepts any first candle.
         - A candle whose timestamp equals the last stored one is treated as
           an idempotent correction (safe re-delivery), not a new bar.
-        - A candle exactly 60 seconds after the last stored one is a normal
-          continuation and is always accepted.
+        - A candle exactly ``period_seconds`` after the last stored one is a
+          normal continuation and is always accepted.
         - Anything else (a duplicate/backwards timestamp, or a jump of any
           other size) is rejected with ``NonSequentialCandleError`` unless
-          the caller passes ``allow_gap=True``, which only the engine's
-          confirmed-resync path is allowed to do (see Engine.on_candle). A
-          gap is recorded as-is; no intermediate candles are fabricated.
+          the caller passes ``allow_gap=True``, which only a confirmed-resync
+          path is allowed to do (see Engine.on_candle / M5Engine.on_candle).
+          A gap is recorded as-is; no intermediate candles are fabricated.
 
         Returns True if the stored state changed.
         """
@@ -146,11 +156,11 @@ class CandleStore:
                         f"{symbol}: candle at {candle.timestamp} is not after "
                         f"the last stored candle at {last.timestamp}"
                     )
-                elif delta != M1_SECONDS and not allow_gap:
+                elif delta != self.period_seconds and not allow_gap:
                     raise NonSequentialCandleError(
                         f"{symbol}: candle at {candle.timestamp} is {delta:.0f}s "
                         f"after the last stored candle at {last.timestamp}, "
-                        "expected exactly 60s"
+                        f"expected exactly {self.period_seconds}s"
                     )
                 else:
                     candles.append(candle)
@@ -189,7 +199,7 @@ class CandleStore:
         payload = json.dumps(
             {
                 "data_schema_version": DATA_SCHEMA_VERSION,
-                **state.to_dict(),
+                **state.to_dict(candles_key=self.candles_key),
             },
             separators=(",", ":"),
             ensure_ascii=False,

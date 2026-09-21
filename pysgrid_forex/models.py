@@ -86,7 +86,9 @@ class SymbolState:
     rejected_count: int = 0
     candles: list[Candle] | None = None
 
-    def to_dict(self, *, m1_valid: bool | None = None) -> dict[str, Any]:
+    def to_dict(
+        self, *, valid: bool | None = None, candles_key: str = "candles_1m", valid_key: str = "m1_valid"
+    ) -> dict[str, Any]:
         payload = {
             "symbol": self.symbol,
             "market_state": self.market_state,
@@ -97,8 +99,8 @@ class SymbolState:
             "reconnect_count": self.reconnect_count,
             "gap_recoveries": self.gap_recoveries,
             "rejected_count": self.rejected_count,
-            "candles_1m": [c.as_dict() for c in (self.candles or [])],
+            candles_key: [c.as_dict() for c in (self.candles or [])],
         }
-        if m1_valid is not None:
-            payload["m1_valid"] = m1_valid
+        if valid is not None:
+            payload[valid_key] = valid
         return payload

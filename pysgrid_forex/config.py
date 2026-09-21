@@ -24,6 +24,16 @@ class Settings:
     port: int = 8080
     max_candles: int = 1500
     stale_seconds: int = 120
+
+    # M5 pipeline: RealMarketAPI's WebSockets were confirmed to deliver
+    # genuine native 5-minute candles (see README's Data-integrity rules).
+    # This reuses the exact same WebSocket connections as the M1 pipeline
+    # (no new connections opened -- the account's concurrent-connection
+    # limit is already fully used by the M1 pipeline's one-per-symbol
+    # connections). 24h of 5-minute candles is 288; default keeps a margin.
+    m5_data_dir: str = "./data-m5"
+    m5_max_candles: int = 300
+    m5_stale_seconds: int = 600
     reconnect_max_seconds: int = 30
     rest_timeout_seconds: float = 15.0
     log_level: str = "INFO"
@@ -60,4 +70,7 @@ class Settings:
             reconnect_max_seconds=int(os.getenv("PYSGRID_RECONNECT_MAX_SECONDS", "30")),
             rest_timeout_seconds=float(os.getenv("PYSGRID_REST_TIMEOUT_SECONDS", "15")),
             log_level=os.getenv("PYSGRID_LOG_LEVEL", "INFO").upper(),
+            m5_data_dir=os.getenv("PYSGRID_M5_DATA_DIR", "./data-m5"),
+            m5_max_candles=int(os.getenv("PYSGRID_M5_MAX_CANDLES", "300")),
+            m5_stale_seconds=int(os.getenv("PYSGRID_M5_STALE_SECONDS", "600")),
         )

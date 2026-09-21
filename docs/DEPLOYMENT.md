@@ -35,6 +35,17 @@ PYSGRID_SYMBOLS=XAUUSD,EURUSD,GBPUSD,USDJPY,GBPJPY,AUDUSD,USDCAD,NZDUSD,XAGUSD,U
 PYSGRID_PORT=8080
 ```
 
+Optional M5 pipeline overrides (defaults shown; see README's "Native M5 pipeline" section):
+
+```text
+PYSGRID_M5_DATA_DIR=./data-m5
+PYSGRID_M5_MAX_CANDLES=300
+PYSGRID_M5_STALE_SECONDS=600
+```
+
+`PYSGRID_M5_DATA_DIR` is created automatically on startup (same `mkdir -p` behavior as the M1 `data_dir`), so
+no extra provisioning is needed on the Oracle host beyond write access to the application directory.
+
 Then:
 
 ```bash

@@ -69,6 +69,27 @@ The list is configurable through `PYSGRID_SYMBOLS`.
   file (e.g. from a pre-v4 schema version, before write-time contiguity enforcement existed) is discarded, and
   only once, on first load.
 
+## Native M5 pipeline
+
+Since RealMarketAPI's WebSockets deliver a genuine, confirmed 300-second cadence under `timeFrame=M1` (see
+above), that data is honestly exposed as what it actually is -- M5 -- rather than only rejected as invalid
+M1:
+
+- The M1 pipeline is completely unchanged: `candles_1m`, `m1_valid`, and every M1 endpoint behave exactly as
+  before. The M5 pipeline is purely additive, running alongside it.
+- No second WebSocket connection is opened. `Engine._dispatch()` feeds the exact same raw candle stream, from
+  the same one-connection-per-symbol pool already used by M1, to both the M1 acceptance path and the M5 one
+  (`M5Engine`). This matters because RealMarketAPI plans cap concurrent connections per key, and that pool is
+  already fully used by the M1 pipeline.
+- `M5Engine` applies the identical discipline as the M1 engine, at a 300-second period instead of 60: a
+  candle is only ever persisted once a *following* candle confirms it sits on an exact 300-second cadence;
+  gaps are held as unconfirmed anchors, never fabricated; `CandleStore`'s write-time contiguity check enforces
+  this at the persistence layer too (`period_seconds=300`, `candles_5m` key).
+- `m5_max_candles` (default 300) retains roughly 24 hours of history (288 five-minute candles/day) with a
+  margin.
+- `m5_valid`/`M5Engine.is_valid` requires a fresh (`m5_stale_seconds`, default 600s), uninterrupted
+  300-second-spaced tail, exactly mirroring `is_valid_m1`'s rigor.
+
 ## Local test
 
 Python 3.11+:
@@ -112,6 +133,16 @@ and -- importantly -- what it can't actually do yet.
 - `GET /metrics`
 
 The JSON contains only completed M1 candles. Provider timestamps are normalized to UTC ISO-8601 strings.
+
+### Native M5 endpoints
+
+- `GET /public/m5-live.json`
+- `GET /public/m5-forex.json`
+- `GET /public/m5/{symbol}.json`
+
+Same shape as their M1 counterparts, but `timeframe: "M5"`, `m5_valid`, and a `candles_5m` array of
+completed, genuinely 300-second-spaced candles. `/health` and `/metrics` also report M5 status per symbol
+(`m5_status`, `m5_live_symbols`, `all_m5_live`, `symbols_m5`).
 
 ## Security
 
